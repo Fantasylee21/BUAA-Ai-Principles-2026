@@ -1,0 +1,89 @@
+```gitignore
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================================================
+# VS Code
+# ============================================================
+.vscode/*
+
+# 保留团队共享配置时可取消下面这些注释
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+
+*.code-workspace
+
+# ============================================================
+# AI Coding Agents / Agent State
+# ============================================================
+
+# OpenAI Codex
+.codex/
+.codex-*/
+
+# Claude Code
+.claude/
+.claude-*/
+
+# Cursor
+.cursor/
+.cursor-*/
+
+# Windsurf
+.windsurf/
+
+# Continue
+.continue/
+
+# Cline / Roo Code
+.cline/
+.roo/
+
+# Aider
+.aider*
+.aider/
+
+# Agent-generated local memory / plans / state
+.agent/
+.agents/
+.ai/
+.ai-cache/
+.agent-cache/
+.agent-state/
+.agent-memory/
+.memory/
+
+# Temporary prompts / conversations / traces
+*.prompt.local
+*.agent.local
+*.trace
+*.trace.json
+*.conversation.json
+*.session.json
+
+# MCP local configuration
+.mcp.local.json
+mcp.local.json
+
+# ============================================================
+# Secrets / Environment Variables
+# ============================================================
+.env
+.env.*
+!.env.example
+!.env.template
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+credentials.json
+se
