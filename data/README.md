@@ -107,6 +107,37 @@ report.
 The cleaned JSONL files are canonical intermediate records. Clarifying-question
 labels and LLaMAFactory ShareGPT messages are added in later conversion steps.
 
+## Generated clarifying-question labels
+
+The Conflict clarifying-question labels under `cleaned/` were generated on
+2026-10-14 from the `cleaned/all` VL and Omni records. This source variant
+ignores `use_in_main` while retaining the other cleaning and consistency rules
+described above.
+
+The Conflict records contain 441 sample IDs belonging to 378 unique
+`split_group_id` values. Questions were generated once per unique group and
+then mapped back to every corresponding sample ID, avoiding repeated model
+calls for the same video.
+
+Generation used Alibaba Cloud Bailian's `qwen3.8-omni-flash` model with the
+original video and `text_content` as inputs. Audio was included whenever it was
+present in the original video. Each group has exactly five neutral, open-ended
+clarifying questions. Second-person wording addresses the current user, not a
+person appearing or speaking in the video. The generated output passed checks
+for question count, uniqueness, language, question punctuation, leading-choice
+wording, and incorrect second-person references.
+
+Generated files:
+
+- `cleaned/clarifying_questions_by_group.jsonl`: 378 group-level records.
+- `cleaned/clarifying_questions_by_sample_id.jsonl`: 441 sample-level records;
+  use this file to join labels to training records by `sample_id`.
+- `cleaned/generation_summary.json`: model, prompt version, coverage, token
+  usage, and estimated generation cost.
+
+All 378 groups and 441 sample IDs were completed without missing outputs. The
+API credential used for generation is not stored in these files.
+
 ## Other data directories
 
 - `llamafactory/dataset_info.json`: LLaMAFactory dataset registrations.
