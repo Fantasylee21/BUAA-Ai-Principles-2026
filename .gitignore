@@ -87,3 +87,8 @@ mcp.local.json
 
 credentials.json
 se
+
+# 本地保存的项目数据集、模型、输出和日志文件夹
+/Dataset
+/models
+/__pycache__
