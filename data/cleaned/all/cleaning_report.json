@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "variant": "all",
+  "input": {
+    "path": "Dataset/train.jsonl",
+    "sha256": "294ccca1ca4ff28cbc67338cd129138a09dbc0920deee9826a703995a5d9fa77",
+    "records": 3354
+  },
+  "filtering": {
+    "use_in_main_policy": "ignored",
+    "accepted_records": 3354,
+    "rejected_records": 0,
+    "rejection_reasons": {},
+    "accepted_groups": 2104,
+    "paired_groups": 1250
+  },
+  "vl": {
+    "path": "data/cleaned/all/train_vl_clean.jsonl",
+    "records": 2104,
+    "sha256": "ec0c4994c1c3e41e3a3b746f7a43303d1d34f674ff0a0c9acbe549d8e53dd15e",
+    "actions": {
+      "converted_unpaired_va_to_vt": 324,
+      "kept_unpaired_vt": 530,
+      "kept_vt_over_paired_va": 1250
+    },
+    "source_protocol": {
+      "VA": 324,
+      "VT": 1780
+    },
+    "sample_type": {
+      "Aligned": 1726,
+      "Conflict": 378
+    },
+    "pred_emotion": {
+      "negative": 1222,
+      "neutral": 7,
+      "positive": 875
+    },
+    "is_uncertain": {
+      "no": 1726,
+      "yes": 378
+    },
+    "use_in_main": {
+      "False": 117,
+      "True": 1987
+    }
+  },
+  "omni": {
+    "path": "data/cleaned/all/train_omni_clean.jsonl",
+    "records": 3354,
+    "sha256": "7a89b21cce5469c72deefc2b143dd64eb5ee47b80e7650ad7f1c456080be3f88",
+    "actions": {
+      "kept_va_with_text_and_audio": 1544,
+      "kept_vt": 1780,
+      "relabelled_va_from_paired_conflict_union": 30
+    },
+    "source_protocol": {
+      "VA": 1574,
+      "VT": 1780
+    },
+    "training_protocol": {
+      "VT": 1780,
+      "VTA": 1574
+    },
+    "sample_type": {
+      "Aligned": 2913,
+      "Conflict": 441
+    },
+    "pred_emotion": {
+      "negative": 1944,
+      "neutral": 7,
+      "positive": 1403
+    },
+    "is_uncertain": {
+      "no": 2913,
+      "yes": 441
+    },
+    "use_in_main": {
+      "False": 146,
+      "True": 3208
+    }
+  },
+  "notes": [
+    "Conflict samples are preserved; conflict means the model should output is_uncertain=yes.",
+    "VL keeps VT when VT and VA share a split_group_id because both become vision+text inputs.",
+    "Omni VA uncertainty is the union of paired VT and VA conflict labels.",
+    "For unpaired VA records, no VT text-view label exists, so the original VA target is retained."
+  ]
+}
