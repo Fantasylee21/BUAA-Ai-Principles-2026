@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean the released training split for the VL and Omni SFT pipelines."""
+"""Clean a released labeled split for the VL and Omni SFT pipelines."""
 
 from __future__ import annotations
 
@@ -26,15 +26,21 @@ def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
         description=(
-            "Validate Dataset/train.jsonl and create deterministic, model-specific "
-            "training JSONL files without known contradictory supervision."
+            "Validate a released labeled split and create deterministic, "
+            "model-specific JSONL files without known contradictory supervision."
         )
     )
     parser.add_argument(
         "--input",
         type=Path,
         default=repo_root / "Dataset" / "train.jsonl",
-        help="Released labeled training JSONL.",
+        help="Released labeled JSONL to clean.",
+    )
+    parser.add_argument(
+        "--expected-split",
+        choices=("train", "val"),
+        default="train",
+        help="Required value of each input record's split field.",
     )
     parser.add_argument(
         "--dataset-root",
@@ -46,12 +52,21 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=repo_root / "data" / "cleaned" / "use_in_main_true",
-        help="Directory for cleaned JSONL files and the cleaning report.",
+        help="Directory for split-prefixed cleaned JSONL files and the report.",
     )
     parser.add_argument(
         "--ignore-use-in-main",
         action="store_true",
         help="Keep structurally valid records regardless of use_in_main.",
+    )
+    parser.add_argument(
+        "--baseline-aligned-validation",
+        action="store_true",
+        help=(
+            "Preserve every validation record and match baseline inputs: VL uses "
+            "VT=vision+text and VA=vision; Omni uses VT=vision+text and "
+            "VA=vision+audio."
+        ),
     )
     return parser.parse_args()
 
@@ -88,7 +103,9 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def validate_record(record: dict[str, Any], dataset_root: Path) -> list[str]:
+def validate_record(
+    record: dict[str, Any], dataset_root: Path, expected_split: str = "train"
+) -> list[str]:
     reasons: list[str] = []
     protocol = record.get("protocol")
     sample_id = record.get("sample_id")
@@ -101,8 +118,8 @@ def validate_record(record: dict[str, Any], dataset_root: Path) -> list[str]:
         reasons.append("invalid_sample_id")
     if not isinstance(split_group_id, str) or not split_group_id:
         reasons.append("invalid_split_group_id")
-    if record.get("split") != "train":
-        reasons.append("not_train_split")
+    if record.get("split") != expected_split:
+        reasons.append(f"not_{expected_split}_split")
     if protocol not in PROTOCOLS:
         reasons.append("invalid_protocol")
     if record.get("sample_type") not in SAMPLE_TYPES:
@@ -202,8 +219,40 @@ def build_vl_records(
     return outputs, actions
 
 
-def build_omni_records(
+def build_vl_records_preserving_source(
     records: list[dict[str, Any]], groups: dict[str, dict[str, dict[str, Any]]]
+) -> tuple[list[dict[str, Any]], Counter[str]]:
+    outputs: list[dict[str, Any]] = []
+    actions: Counter[str] = Counter()
+    for record in records:
+        group = groups[record["split_group_id"]]
+        if record["protocol"] == "VT":
+            action = "kept_vt_source_record_for_baseline_eval"
+            training_protocol = "VT"
+            input_modalities = ["vision", "text"]
+        else:
+            action = "kept_va_source_record_for_visual_only_eval"
+            training_protocol = "V"
+            input_modalities = ["vision"]
+        actions[action] += 1
+        outputs.append(
+            common_output(
+                record,
+                group,
+                training_protocol=training_protocol,
+                input_modalities=input_modalities,
+                effective_sample_type=record["sample_type"],
+                cleaning_action=action,
+            )
+        )
+    return outputs, actions
+
+
+def build_omni_records(
+    records: list[dict[str, Any]],
+    groups: dict[str, dict[str, dict[str, Any]]],
+    *,
+    baseline_aligned_validation: bool = False,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
     outputs: list[dict[str, Any]] = []
     actions: Counter[str] = Counter()
@@ -217,13 +266,22 @@ def build_omni_records(
         else:
             paired_types = {item["sample_type"] for item in group.values()}
             effective_sample_type = "Conflict" if "Conflict" in paired_types else "Aligned"
-            action = (
-                "relabelled_va_from_paired_conflict_union"
-                if effective_sample_type != record["sample_type"]
-                else "kept_va_with_text_and_audio"
-            )
-            training_protocol = "VTA"
-            input_modalities = ["vision", "text", "audio"]
+            if baseline_aligned_validation:
+                action = (
+                    "relabelled_va_from_paired_conflict_union_for_baseline_eval"
+                    if effective_sample_type != record["sample_type"]
+                    else "kept_va_with_audio_without_text_for_baseline_eval"
+                )
+                training_protocol = "VA"
+                input_modalities = ["vision", "audio"]
+            else:
+                action = (
+                    "relabelled_va_from_paired_conflict_union"
+                    if effective_sample_type != record["sample_type"]
+                    else "kept_va_with_text_and_audio"
+                )
+                training_protocol = "VTA"
+                input_modalities = ["vision", "text", "audio"]
 
         actions[action] += 1
         outputs.append(
@@ -252,6 +310,7 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
     os.replace(temporary_path, path)
+    path.chmod(0o644)
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -263,6 +322,7 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         json.dump(value, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     os.replace(temporary_path, path)
+    path.chmod(0o644)
 
 
 def main() -> None:
@@ -271,6 +331,9 @@ def main() -> None:
     input_path = args.input.absolute()
     dataset_root = args.dataset_root.absolute()
     output_dir = args.output_dir.absolute()
+
+    if args.baseline_aligned_validation and args.expected_split != "val":
+        raise ValueError("--baseline-aligned-validation requires --expected-split val")
 
     if not input_path.is_file():
         raise FileNotFoundError(input_path)
@@ -284,7 +347,7 @@ def main() -> None:
     rejection_reasons: Counter[str] = Counter()
 
     for record in raw_records:
-        reasons = validate_record(record, dataset_root)
+        reasons = validate_record(record, dataset_root, args.expected_split)
         sample_id = record.get("sample_id")
         if isinstance(sample_id, str):
             if sample_id in seen_sample_ids:
@@ -326,12 +389,21 @@ def main() -> None:
         preview = ", ".join(emotion_mismatch_groups[:5])
         raise ValueError(f"Paired groups disagree on M12 emotion: {preview}")
 
-    vl_records, vl_actions = build_vl_records(groups)
-    omni_records, omni_actions = build_omni_records(accepted, groups)
+    if args.baseline_aligned_validation:
+        vl_records, vl_actions = build_vl_records_preserving_source(
+            accepted, groups
+        )
+    else:
+        vl_records, vl_actions = build_vl_records(groups)
+    omni_records, omni_actions = build_omni_records(
+        accepted,
+        groups,
+        baseline_aligned_validation=args.baseline_aligned_validation,
+    )
 
-    vl_path = output_dir / "train_vl_clean.jsonl"
-    omni_path = output_dir / "train_omni_clean.jsonl"
-    rejected_path = output_dir / "train_rejected.jsonl"
+    vl_path = output_dir / f"{args.expected_split}_vl_clean.jsonl"
+    omni_path = output_dir / f"{args.expected_split}_omni_clean.jsonl"
+    rejected_path = output_dir / f"{args.expected_split}_rejected.jsonl"
     report_path = output_dir / "cleaning_report.json"
     write_jsonl(vl_path, vl_records)
     write_jsonl(omni_path, omni_records)
@@ -339,6 +411,7 @@ def main() -> None:
 
     report = {
         "schema_version": 1,
+        "split": args.expected_split,
         "variant": "all" if args.ignore_use_in_main else "use_in_main_true",
         "input": {
             "path": path_for_report(input_path, repo_root),
@@ -348,6 +421,16 @@ def main() -> None:
         "filtering": {
             "use_in_main_policy": (
                 "ignored" if args.ignore_use_in_main else "require_true"
+            ),
+            "vl_source_record_policy": (
+                "preserve_all_with_baseline_inputs"
+                if args.baseline_aligned_validation
+                else "collapse_equivalent_groups"
+            ),
+            "evaluation_input_policy": (
+                "baseline_aligned"
+                if args.baseline_aligned_validation
+                else "training_default"
             ),
             "accepted_records": len(accepted),
             "rejected_records": len(rejected),
@@ -380,7 +463,16 @@ def main() -> None:
         },
         "notes": [
             "Conflict samples are preserved; conflict means the model should output is_uncertain=yes.",
-            "VL keeps VT when VT and VA share a split_group_id because both become vision+text inputs.",
+            (
+                "VL preserves every source record with baseline inputs: VT uses vision+text and VA uses vision only."
+                if args.baseline_aligned_validation
+                else "VL keeps VT when VT and VA share a split_group_id because both become vision+text inputs."
+            ),
+            (
+                "Omni baseline validation inputs are VT=vision+text and VA=vision+audio; supplied text is withheld for VA."
+                if args.baseline_aligned_validation
+                else "Omni training inputs are VT=vision+text and VA=vision+text+audio."
+            ),
             "Omni VA uncertainty is the union of paired VT and VA conflict labels.",
             "For unpaired VA records, no VT text-view label exists, so the original VA target is retained.",
         ],

@@ -46,6 +46,18 @@ python data/prepare_training_data.py \
   --output-dir /path/to/output
 ```
 
+Clean the complete official validation split without applying the
+training-only `use_in_main` selection flag:
+
+```bash
+python data/prepare_training_data.py \
+  --input Dataset/val.jsonl \
+  --expected-split val \
+  --ignore-use-in-main \
+  --baseline-aligned-validation \
+  --output-dir data/cleaned/val
+```
+
 ### Current cleaning results
 
 | Variant | Valid source records | Rejected | VL records | Omni records |
@@ -138,10 +150,67 @@ Generated files:
 All 378 groups and 441 sample IDs were completed without missing outputs. The
 API credential used for generation is not stored in these files.
 
+## LlamaFactory SFT datasets
+
+Run `python scripts/prepare_sft_data.py` from the repository to convert the
+complete `cleaned/all` training records and `cleaned/val` official validation
+records to LlamaFactory ShareGPT multimodal data. No validation subset is
+sampled from the training set. The converter verifies that the official splits
+have no overlapping `sample_id` or `split_group_id` values. All 666 official
+validation records are retained in both model paths, including paired VT/VA
+records, so validation matches baseline sample coverage and weighting.
+
+Validation input modalities also match the baseline scripts exactly:
+
+| Model path | VT validation input | VA validation input |
+| --- | --- | --- |
+| VL | video + supplied text | visual video frames only |
+| Omni | video + supplied text; embedded audio disabled | video + embedded audio; supplied text withheld |
+
+This validation policy intentionally differs from training. VL training uses
+`text_content` to convert VA into vision-text examples, while Omni training uses
+video, text, and audio for VA examples.
+
+The generated artifacts are stored under the Git-ignored
+`llamafactory/generated/` directory:
+
+| Dataset | Source split | Examples | Groups | Supervision target |
+| --- | --- | ---: | ---: | --- |
+| `affect_sft_vl_train` | official train | 2,104 | 2,104 | emotion + uncertainty + question |
+| `affect_sft_vl_val` | official val | 666 | 412 | emotion only |
+| `affect_sft_omni_train` | official train | 3,354 | 2,104 | emotion + uncertainty + question |
+| `affect_sft_omni_val` | official val | 666 | 412 | emotion only |
+
+Training VL records contain `<video>` plus supplied text. Training Omni VT
+records use the same inputs, while training Omni VA records contain
+`<video><audio>`, supplied text, and a separately extracted 16 kHz mono FLAC
+audio track. During official validation, VL VA records omit text and audio;
+Omni VA records keep `<video><audio>` but omit supplied text. There are 1,895
+extracted audio files across the official train and validation splits.
+
+Training assistant targets are compact JSON objects with exactly
+`pred_emotion`, `is_uncertain`, and `clarifying_question`. Official validation
+targets contain exactly `pred_emotion`. No synthetic question is generated or
+attached to validation records because the official split provides no standard
+clarifying-question answer; SFT validation therefore measures emotion
+recognition loss only.
+
+By default, each Conflict record deterministically selects one of its five
+question labels. This preserves the cleaned dataset's class balance. The
+converter also supports an explicit five-question expansion for augmentation;
+see `scripts/README.md` for commands and the resulting weighting tradeoff.
+
+`llamafactory/dataset_info.json` registers the four generated datasets. A
+LlamaFactory training configuration must use `dataset_dir: data/llamafactory`
+and `media_dir: .` when launched from the repository root. Qwen2.5-Omni
+configurations must also set `use_audio_in_video: true` to match the baseline's
+VA audio handling; VT records contain no audio input and remain video-text only.
+
 ## Other data directories
 
 - `llamafactory/dataset_info.json`: LLaMAFactory dataset registrations.
 - `llamafactory/generated/`: generated ShareGPT files and extracted audio;
   ignored by Git.
-- `splits/`: committed sample ID lists for fixed train/validation splits.
+- `splits/`: reserved for future experiment-specific partitions; the default
+  SFT pipeline uses the official train/validation boundary directly.
 - `manifests/`: dataset hashes and conversion manifests.
