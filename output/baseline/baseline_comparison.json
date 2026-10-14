@@ -1,0 +1,44 @@
+[
+  {
+    "Model": "Qwen2.5-VL-3B",
+    "VA_input": "visual-only",
+    "Input_profile": "native_default",
+    "Samples": 666,
+    "Inference_errors": 0,
+    "Normalized_outputs": 0,
+    "Macro-F1": 0.48141751865156124,
+    "Conflict_accuracy": 0.013513513513513514,
+    "Aligned_calibration": 0.9307432432432432,
+    "Score": 0.43091146202848335,
+    "Peak_allocated_GiB": 8.841182231903076,
+    "Peak_reserved_GiB": 11.509765625
+  },
+  {
+    "Model": "Qwen3-VL-4B",
+    "VA_input": "visual-only",
+    "Input_profile": "native_default",
+    "Samples": 666,
+    "Inference_errors": 0,
+    "Normalized_outputs": 1,
+    "Macro-F1": 0.5205577692374194,
+    "Conflict_accuracy": 0.013513513513513514,
+    "Aligned_calibration": 1.0,
+    "Score": 0.46433293867276376,
+    "Peak_allocated_GiB": 12.18349838256836,
+    "Peak_reserved_GiB": 14.4765625
+  },
+  {
+    "Model": "Qwen2.5-Omni-3B",
+    "VA_input": "visual+audio",
+    "Input_profile": "native_default",
+    "Samples": 666,
+    "Inference_errors": 0,
+    "Normalized_outputs": 109,
+    "Macro-F1": 0.35586512091747696,
+    "Conflict_accuracy": 0.0,
+    "Aligned_calibration": 0.9983108108108109,
+    "Score": 0.37759472262090066,
+    "Peak_allocated_GiB": 12.118898868560791,
+    "Peak_reserved_GiB": 23.0859375
+  }
+]
