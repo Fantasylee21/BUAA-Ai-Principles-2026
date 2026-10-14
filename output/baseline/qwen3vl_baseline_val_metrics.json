@@ -18,9 +18,9 @@
   },
   "va_input_limitation": "visual frames only; no audio was consumed",
   "files": {
-    "predictions": "output/qwen3vl_baseline_val_predictions.csv",
-    "details": "output/qwen3vl_baseline_val_details.jsonl",
-    "run_config": "output/qwen3vl_baseline_val_run_config.json"
+    "predictions": "output/baseline/qwen3vl_baseline_val_predictions.csv",
+    "details": "output/baseline/qwen3vl_baseline_val_details.jsonl",
+    "run_config": "output/baseline/qwen3vl_baseline_val_run_config.json"
   },
   "Macro-F1": 0.5205577692374194,
   "Conflict_accuracy": 0.013513513513513514,

@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path", type=Path, default=Path("models/Qwen2.5-Omni-3B")
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    parser.add_argument("--output-dir", type=Path, default=Path("output/baseline"))
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--run-name", default="qwen25omni_baseline_val")
     parser.add_argument("--fps", type=float, default=None)
