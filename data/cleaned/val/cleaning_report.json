@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "split": "val",
+  "variant": "all",
+  "input": {
+    "path": "Dataset/val.jsonl",
+    "sha256": "1a0f1459dc8a1282489df2ac3e0f2b4d897148dbc5d288bd31cabdbbd5c6ef52",
+    "records": 666
+  },
+  "filtering": {
+    "use_in_main_policy": "ignored",
+    "vl_source_record_policy": "preserve_all_with_baseline_inputs",
+    "evaluation_input_policy": "baseline_aligned",
+    "accepted_records": 666,
+    "rejected_records": 0,
+    "rejection_reasons": {},
+    "accepted_groups": 412,
+    "paired_groups": 254
+  },
+  "vl": {
+    "path": "data/cleaned/val/val_vl_clean.jsonl",
+    "records": 666,
+    "sha256": "3e00298f4d3c1741fc9bdde85400d9136e2c638db8171c35d63d9a07d50af64c",
+    "actions": {
+      "kept_va_source_record_for_visual_only_eval": 321,
+      "kept_vt_source_record_for_baseline_eval": 345
+    },
+    "source_protocol": {
+      "VA": 321,
+      "VT": 345
+    },
+    "sample_type": {
+      "Aligned": 592,
+      "Conflict": 74
+    },
+    "pred_emotion": {
+      "negative": 414,
+      "positive": 252
+    },
+    "is_uncertain": {
+      "no": 592,
+      "yes": 74
+    },
+    "use_in_main": {
+      "False": 31,
+      "True": 635
+    }
+  },
+  "omni": {
+    "path": "data/cleaned/val/val_omni_clean.jsonl",
+    "records": 666,
+    "sha256": "a0750d4aa17e97f8f0e013b325714208b12fd190f1fc9c802f05e4892934327b",
+    "actions": {
+      "kept_va_with_audio_without_text_for_baseline_eval": 311,
+      "kept_vt": 345,
+      "relabelled_va_from_paired_conflict_union_for_baseline_eval": 10
+    },
+    "source_protocol": {
+      "VA": 321,
+      "VT": 345
+    },
+    "training_protocol": {
+      "VA": 321,
+      "VT": 345
+    },
+    "sample_type": {
+      "Aligned": 582,
+      "Conflict": 84
+    },
+    "pred_emotion": {
+      "negative": 414,
+      "positive": 252
+    },
+    "is_uncertain": {
+      "no": 582,
+      "yes": 84
+    },
+    "use_in_main": {
+      "False": 31,
+      "True": 635
+    }
+  },
+  "notes": [
+    "Conflict samples are preserved; conflict means the model should output is_uncertain=yes.",
+    "VL preserves every source record with baseline inputs: VT uses vision+text and VA uses vision only.",
+    "Omni baseline validation inputs are VT=vision+text and VA=vision+audio; supplied text is withheld for VA.",
+    "Omni VA uncertainty is the union of paired VT and VA conflict labels.",
+    "For unpaired VA records, no VT text-view label exists, so the original VA target is retained."
+  ]
+}

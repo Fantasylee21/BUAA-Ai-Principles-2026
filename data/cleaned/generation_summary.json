@@ -1,0 +1,14 @@
+{
+  "model": "qwen3.8-omni-flash",
+  "prompt_version": "conflict-questions-v5-qwen38-omni-user-addressee",
+  "total_conflict_groups": 378,
+  "completed_groups": 378,
+  "remaining_groups": 0,
+  "mapped_conflict_samples": 441,
+  "failed_item_ids": [],
+  "requests": 440,
+  "prompt_tokens": 905468,
+  "completion_tokens": 45711,
+  "total_tokens": 951179,
+  "estimated_list_cost_cny": 0.8477941
+}
