@@ -30,6 +30,8 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from tqdm.auto import tqdm
 from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
 
+from sft_prompt import SYSTEM_PROMPT, TARGET_INSTRUCTION, prompt_for as sft_prompt_for
+
 
 EMOTIONS = ("positive", "negative", "neutral")
 VALID_UNCERTAINTY = {"yes", "no"}
@@ -37,15 +39,6 @@ VALID_UNCERTAINTY = {"yes", "no"}
 # not provide an override. Transformers' generic chat-template loader does not
 # apply that utility default, so preserve it explicitly here.
 OMNI_DEFAULT_FPS = 2.0
-SYSTEM_PROMPT = (
-    "You are a careful multimodal emotion classifier. Return exactly one JSON "
-    "object with string keys pred_emotion, is_uncertain, and "
-    "clarifying_question. pred_emotion must be positive, negative, or neutral. "
-    "is_uncertain must be yes or no. Use none as clarifying_question when "
-    "is_uncertain is no. When uncertain, ask one brief, neutral, non-leading "
-    "question that would help resolve the emotion. Do not include markdown or "
-    "any text outside the JSON object."
-)
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,10 +108,6 @@ def infer_protocol(row: dict[str, Any]) -> str:
     raise ValueError(f"Cannot infer protocol from sample_id={row['sample_id']!r}")
 
 
-def dialogue_for(row: dict[str, Any]) -> str:
-    return str(row.get("text_content", row.get("text", ""))).strip()
-
-
 def audio_from_video(video_path: Path, sampling_rate: int = 16_000) -> np.ndarray:
     """Decode one video's audio track to mono float32 PCM without extra packages."""
     command = [
@@ -144,24 +133,7 @@ def audio_from_video(video_path: Path, sampling_rate: int = 16_000) -> np.ndarra
 
 
 def prompt_for(row: dict[str, Any], protocol: str) -> str:
-    common = (
-        "Classify the person's overall emotion in this sample. Treat visible "
-        "expression, body language, and the second modality as separate evidence. "
-        "If the available evidence conflicts or is insufficient for a reliable "
-        "judgment, answer is_uncertain=yes. Otherwise answer no."
-    )
-    if protocol == "VT":
-        dialogue = dialogue_for(row)
-        return (
-            f"Protocol: VT (vision plus supplied text). {common}\n"
-            f"Supplied text: {json.dumps(dialogue, ensure_ascii=False)}"
-        )
-
-    return (
-        "Protocol: VA (vision plus the audio embedded in the video). Use vocal "
-        "tone, spoken content, visible expression, and body language as separate "
-        f"evidence. {common}"
-    )
+    return sft_prompt_for(row, protocol, "qwen25omni")
 
 
 def first_json_object(raw: str) -> dict[str, Any] | None:
@@ -399,6 +371,7 @@ def main() -> None:
         "max_visual_tokens": args.max_visual_tokens,
         "max_new_tokens": args.max_new_tokens,
         "system_prompt": SYSTEM_PROMPT,
+        "target_instruction": TARGET_INSTRUCTION,
         "protocol_inputs": {
             "VT": "video frames plus supplied text; embedded audio disabled",
             "VA": "video frames plus embedded audio; supplied text withheld",

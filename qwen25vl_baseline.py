@@ -30,18 +30,11 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from tqdm.auto import tqdm
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+from sft_prompt import SYSTEM_PROMPT, TARGET_INSTRUCTION, prompt_for as sft_prompt_for
+
 
 EMOTIONS = ("positive", "negative", "neutral")
 VALID_UNCERTAINTY = {"yes", "no"}
-SYSTEM_PROMPT = (
-    "You are a careful multimodal emotion classifier. Return exactly one JSON "
-    "object with string keys pred_emotion, is_uncertain, and "
-    "clarifying_question. pred_emotion must be positive, negative, or neutral. "
-    "is_uncertain must be yes or no. Use none as clarifying_question when "
-    "is_uncertain is no. When uncertain, ask one brief, neutral, non-leading "
-    "question that would help resolve the emotion. Do not include markdown or "
-    "any text outside the JSON object."
-)
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,31 +104,8 @@ def infer_protocol(row: dict[str, Any]) -> str:
     raise ValueError(f"Cannot infer protocol from sample_id={row['sample_id']!r}")
 
 
-def dialogue_for(row: dict[str, Any]) -> str:
-    return str(row.get("text_content", row.get("text", ""))).strip()
-
-
 def prompt_for(row: dict[str, Any], protocol: str) -> str:
-    common = (
-        "Classify the person's overall emotion in this sample. Treat visible "
-        "expression, body language, and the second modality as separate evidence. "
-        "If the available evidence conflicts or is insufficient for a reliable "
-        "judgment, answer is_uncertain=yes. Otherwise answer no."
-    )
-    if protocol == "VT":
-        dialogue = dialogue_for(row)
-        return (
-            f"Protocol: VT (vision plus supplied text). {common}\n"
-            f"Supplied text: {json.dumps(dialogue, ensure_ascii=False)}"
-        )
-
-    return (
-        "Protocol: VA (vision plus audio). This Qwen2.5-VL baseline can inspect "
-        "the visual frames but cannot consume the audio stream. Do not invent "
-        "speech content, vocal tone, or other unheard evidence. Treat missing "
-        "audio as a limitation when deciding whether the overall multimodal "
-        f"judgment is uncertain. {common}"
-    )
+    return sft_prompt_for(row, protocol, "qwen25vl")
 
 
 def first_json_object(raw: str) -> dict[str, Any] | None:
@@ -372,6 +342,7 @@ def main() -> None:
         "max_visual_tokens": args.max_visual_tokens,
         "max_new_tokens": args.max_new_tokens,
         "system_prompt": SYSTEM_PROMPT,
+        "target_instruction": TARGET_INSTRUCTION,
         "va_input_limitation": "visual frames only; Qwen2.5-VL receives no audio",
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,

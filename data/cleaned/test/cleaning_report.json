@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "split": "test",
+  "target_mode": "unlabeled_inference",
+  "input": {
+    "path": "Dataset/test_release.jsonl",
+    "sha256": "a21bc5b96fd8719cb2fc733a23a1239bffaf59f115e852f8c4239a1e9f13b1ae",
+    "records": 734
+  },
+  "validation": {
+    "accepted_records": 734,
+    "rejected_records": 0,
+    "rejection_reasons": {},
+    "groups": 458,
+    "paired_vt_va_groups": 276,
+    "source_order_preserved": true
+  },
+  "vl": {
+    "path": "data/cleaned/test/test_vl_clean.jsonl",
+    "records": 734,
+    "sha256": "e21010c75d359e8d917540ad5aa88c213293ddc42e3b1b0b9b0acb49dfc53bea",
+    "source_protocol": {
+      "VA": 347,
+      "VT": 387
+    },
+    "input_modalities": {
+      "vision": 347,
+      "vision+text": 387
+    },
+    "actions": {
+      "kept_va_visual_only_for_test": 347,
+      "kept_vt_with_text_for_test": 387
+    }
+  },
+  "omni": {
+    "path": "data/cleaned/test/test_omni_clean.jsonl",
+    "records": 734,
+    "sha256": "f5f0a262f78e57bbddcf760b62aea79ab6889c5263f1c7f2660ec0f4a51576bb",
+    "source_protocol": {
+      "VA": 347,
+      "VT": 387
+    },
+    "input_modalities": {
+      "vision+audio": 347,
+      "vision+text": 387
+    },
+    "actions": {
+      "kept_va_with_audio_without_text_for_test": 347,
+      "kept_vt_with_text_for_test": 387
+    }
+  },
+  "notes": [
+    "All released test rows are preserved in their original order; paired VT/VA rows are not collapsed.",
+    "The test split is unlabeled, so no emotion, uncertainty, or clarifying-question target is added.",
+    "VL test inputs are VT=vision+text and VA=vision only.",
+    "Omni test inputs are VT=vision+text with embedded audio disabled and VA=vision+audio with supplied text withheld.",
+    "The raw Dataset/test_release.jsonl remains the submission-order source used by inference scripts."
+  ]
+}

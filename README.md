@@ -24,17 +24,19 @@ Score = 0.5 * Macro-F1
 ## 当前 Baseline 结果
 
 以下结果来自官方验证集全部 666 条样本，三个模型均使用记录为
-`native_default` 的原生输入配置，推理错误数均为 0：
+`native_default` 的原生输入配置，推理错误数均为 0。Baseline 与 SFT inference
+统一使用 `sft_prompt.py` 中的 system prompt、target instruction 和协议描述：
 
 | 模型 | VA 输入 | Macro-F1 | Conflict accuracy | Aligned calibration | Score | 峰值保留显存 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen2.5-VL-3B | 仅视频画面 | 0.481418 | **0.013514** | 0.930743 | 0.430911 | 11.51 GiB |
-| Qwen3-VL-4B | 仅视频画面 | **0.520558** | **0.013514** | **1.000000** | **0.464333** | 14.48 GiB |
-| Qwen2.5-Omni-3B | 视频画面 + 音频 | 0.355865 | 0.000000 | 0.998311 | 0.377595 | 23.09 GiB |
+| Qwen2.5-VL-3B | 仅视频画面 | 0.483716 | 0.000000 | **1.000000** | 0.441858 | 11.51 GiB |
+| Qwen3-VL-4B | 仅视频画面 | **0.509000** | **0.013514** | **1.000000** | **0.458554** | 14.48 GiB |
+| Qwen2.5-Omni-3B | 视频画面 + 音频 | 0.487326 | 0.000000 | **1.000000** | 0.443663 | 23.10 GiB |
 
 VT 样本均输入视频画面和官方提供的文本。VA 样本中，两个 VL 模型不读取音频和
 文本，只输入视频画面；Qwen2.5-Omni 输入视频画面和内嵌音频，不提供官方文本。
-完整逐样本预测、运行配置和未四舍五入的指标保存在 `output/baseline/`。
+完整逐样本预测、运行配置和未四舍五入的指标保存在 `output/baseline/`；Baseline
+与 QLoRA SFT 的详细同口径对比见 `reports/sft/README.md`。
 
 ## 项目结构
 
@@ -49,11 +51,13 @@ VT 样本均输入视频画面和官方提供的文本。VA 样本中，两个 V
 │   ├── LlamaFactory/                # 锁定版本的外部项目，Git 忽略
 │   └── llamafactory.lock.yaml       # LLaMAFactory commit 和参考运行时版本
 ├── data/
+│   ├── prepare_test_data.py         # 官方无标签测试集校验与模态清单生成
 │   ├── prepare_training_data.py     # 原始 JSONL 清洗脚本
 │   ├── cleaned/
 │   │   ├── use_in_main_true/        # 仅保留 use_in_main=true 的训练数据
 │   │   ├── all/                     # SFT 默认使用的完整训练数据
 │   │   ├── val/                     # 保留全部官方验证样本的数据
+│   │   ├── test/                    # 保留全部官方测试样本的无标签推理清单
 │   │   └── clarifying_*.jsonl       # Conflict 样本的引导式问题标签
 │   └── llamafactory/
 │       ├── dataset_info.json        # LLaMAFactory 数据集注册
@@ -192,7 +196,14 @@ ln -s /absolute/path/to/LlamaFactory third_party/LlamaFactory
 `.gitignore` 中；不要把外部项目源码提交进本仓库，也不要在一次已记录的实验中途
 更新其 commit。
 
-## 4. 清洗训练集和官方验证集
+检查版本：
+
+```bash
+git -C third_party/LlamaFactory rev-parse HEAD
+sed -n '1,80p' third_party/llamafactory.lock.yaml
+```
+
+## 4. 清洗训练集、官方验证集和测试集
 
 所有命令建议从仓库根目录执行。
 
@@ -222,18 +233,26 @@ python data/prepare_training_data.py \
   --output-dir data/cleaned/val
 ```
 
+官方测试集 `Dataset/test_release.jsonl` 没有情感和冲突真值。准备脚本只校验媒体、
+协议和样本顺序，不生成伪标签；全部 734 条测试样本及 VT/VA 配对均原样保留：
+
+```bash
+python data/prepare_test_data.py
+```
+
 当前默认数据规模：
 
-| 路径 | 训练样本 | 官方验证样本 |
-| --- | ---: | ---: |
-| VL | 2,104 | 666 |
-| Omni | 3,354 | 666 |
+| 路径 | 训练样本 | 官方验证样本 | 官方测试样本 |
+| --- | ---: | ---: | ---: |
+| VL | 2,104 | 666 | 734 |
+| Omni | 3,354 | 666 | 734 |
 
 ### 模态处理规则
 
-训练和验证的规则不能互换。官方验证必须与对应 baseline 的输入方式保持一致：
+训练和评测的规则不能互换。官方验证和测试必须与对应 baseline 的输入方式保持一致；
+测试集采用与验证集相同的模态规则：
 
-| 模型路径 | VT 训练 | VA 训练 | VT 官方验证 | VA 官方验证 |
+| 模型路径 | VT 训练 | VA 训练 | VT 官方验证/测试 | VA 官方验证/测试 |
 | --- | --- | --- | --- | --- |
 | VL | 视频 + `text_content` | 视频 + `text_content`，视作 VT | 视频 + 文本 | 仅视频画面 |
 | Omni | 视频 + 文本 | 视频 + 文本 + 音频 | 视频 + 文本，关闭音频 | 视频 + 音频，不提供文本 |
@@ -248,6 +267,7 @@ VL 清洗会处理 VT/VA 在有效输入相同后的重复监督；Omni 清洗�
 
 每个冲突组有 5 条生成标签，第二人称“你”指当前用户，而不是视频中的人物。
 官方验证集没有标准引导式问题，因此不为验证集附加合成问题。
+官方测试集没有任何真值，不会写入 LLaMAFactory `dataset_info.json`，仅用于最终推理。
 
 ## 5. 转换为 LLaMAFactory 数据格式
 
@@ -452,6 +472,21 @@ LoRA 默认以 BF16 加载；可通过 `LOAD_IN_4BIT=0|1` 做单独消融。`LIM
 视频和内嵌音频但不提供文本，与 Omni baseline 的输入策略保持一致。测试 Omni 前
 需要确保系统中可以执行 `ffmpeg`。
 
+最终测试集推理通过 `SPLIT=test` 选择 `Dataset/test_release.jsonl`。QLoRA 使用
+`LOAD_IN_4BIT=1` 在 NF4 基座上推理，使用 `LOAD_IN_4BIT=0` 则在 BF16 基座上挂载
+同一 adapter。两种精度必须设置不同的 `RUN_NAME`，避免实验指纹冲突：
+
+```bash
+SPLIT=test LOAD_IN_4BIT=1 RUN_NAME=qwen25vl_qlora_sft_v1_test_nf4 \
+  bash scripts/run_sft_inference.sh qlora \
+  configs/sft/qwen25vl/qlora_sft_v1.yaml 2
+```
+
+测试运行覆盖全部 734 条样本，输出 CSV 包含 `sample_id`、`pred_emotion`、
+`is_uncertain` 和 `clarifying_question` 四列。由于测试集没有真值，测试运行不会产生
+Macro-F1 等比赛指标。模型、量化方式、checkpoint 覆盖方式和输出文件说明见
+`scripts/README.md`。
+
 需要将某个最终 adapter 或中间 checkpoint 合并为完整 Hugging Face 模型时：
 
 ```bash
@@ -487,9 +522,9 @@ bash scripts/run_baselines.sh 2
 1. **从仓库根目录执行。** `media_dir: .` 依赖该工作目录解析 `Dataset/...` 和
    `data/llamafactory/generated/audio/...`。
 2. **官方验证集不是从训练集拆出的。** 必须完整保留发布的 666 条验证样本，不能
-   因配对、重复或缺少引导式问题而删除。
-3. **验证模态必须和 baseline 一致。** 特别是 VL 的 VA 验证只看画面，Omni 的
-   VA 验证只用视频/音频且不提供 `text_content`。
+   因配对、重复或缺少引导式问题而删除；测试集同样必须保持全部 734 条和官方顺序。
+3. **验证和测试模态必须和 baseline 一致。** 特别是 VL 的 VA 样本只看画面，Omni
+   的 VA 样本只用视频/音频且不提供 `text_content`。
 4. **不要删除 Conflict 样本。** 冲突识别准确率和一致样本校准率共同防止模型把
    所有样本都预测为 uncertain。
 5. **不要提交大文件或凭据。** `Dataset/`、`models/`、`third_party/LlamaFactory/`、
@@ -501,7 +536,7 @@ bash scripts/run_baselines.sh 2
 8. **显存不足时一次只改一个因素。** 优先逐步降低每帧像素预算、`cutoff_len` 或
    视频帧数，并保存为新的 YAML。不要无记录地修改 `lora_sft_v1.yaml`。
 9. **Omni 显存压力最大。** 已记录的 Qwen2.5-Omni baseline 在 RTX 4090 上峰值保留
-   显存约 23.09 GiB；训练显存还受序列长度、音频和反向传播影响，必须实际监控。
+   显存约 23.10 GiB；训练显存还受序列长度、音频和反向传播影响，必须实际监控。
 10. **生成数据可重建。** `PREPARE_DATA=1` 会重新生成 JSONL 和音频元数据；执行前
     确认是否使用默认单问题策略，避免改变 Conflict 样本权重。
 11. **保护已完成实验。** 使用新的 `RUN_NAME` 和 YAML 版本，避免输出目录冲突；
