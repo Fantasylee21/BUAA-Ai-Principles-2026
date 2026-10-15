@@ -306,6 +306,40 @@ text with embedded audio disabled; VA samples use video plus embedded audio and
 withhold supplied text, matching the Omni baseline policy. `ffmpeg` must be
 available for decoding VA audio.
 
+Prepare and validate the released test split before test inference:
+
+```bash
+python data/prepare_test_data.py
+```
+
+Set `SPLIT=test` to run the same prompt and modality policy on all 734 unlabeled
+test samples. The following example evaluates the Qwen2.5-VL QLoRA adapter with
+a bitsandbytes NF4 4-bit base model on physical GPU 2:
+
+```bash
+SPLIT=test LOAD_IN_4BIT=1 RUN_NAME=qwen25vl_qlora_sft_v1_test_nf4 bash scripts/run_sft_inference.sh qlora configs/sft/qwen25vl/qlora_sft_v1.yaml 2
+```
+
+Replace the YAML to select another model. `LOAD_IN_4BIT=auto` follows the
+selected training method, `1` forces NF4 4-bit loading, and `0` attaches the
+adapter to a BF16 base model. Use a distinct `RUN_NAME` whenever changing model,
+checkpoint, or quantization. Set `ADAPTER_PATH=/path/to/checkpoint-N` to test a
+selected checkpoint instead of the YAML `output_dir`, and replace the final
+positional `2` to select another physical GPU.
+
+Test runs write the following files under `output/sft/evaluation/`:
+
+- `<RUN_NAME>_predictions.csv`: Kaggle submission candidate in official order.
+- `<RUN_NAME>_details.jsonl`: prompts, raw outputs, parsed values, and runtime data.
+- `<RUN_NAME>_metrics.json`: coverage and runtime statistics without label metrics.
+- `<RUN_NAME>_run_config.json`: reproducibility configuration and fingerprints.
+
+The prediction CSV contains exactly `sample_id`, `pred_emotion`,
+`is_uncertain`, and `clarifying_question`. Test runs do not report Macro-F1,
+Conflict accuracy, Aligned calibration, or Score because the release has no
+truth labels. Runs resume by default; use `OVERWRITE=1` only when intentionally
+replacing a result with the same name and configuration.
+
 ## Merge An SFT Adapter
 
 `merge_sft_adapter.sh` merges either a LoRA or QLoRA PEFT adapter into the

@@ -13,6 +13,7 @@ RUN_NAME="${RUN_NAME:-}"
 LIMIT="${LIMIT:-}"
 OVERWRITE="${OVERWRITE:-0}"
 LOAD_IN_4BIT="${LOAD_IN_4BIT:-auto}"
+SPLIT="${SPLIT:-val}"
 DRY_RUN="${DRY_RUN:-0}"
 
 usage() {
@@ -30,6 +31,7 @@ Environment overrides:
   LIMIT           Evaluate only the first N records.
   OVERWRITE       Set to 1 to replace an existing run.
   LOAD_IN_4BIT    auto, 0, or 1 (default: auto; follows the selected YAML).
+  SPLIT            val or test (default: val).
   DRY_RUN         Set to 1 to validate and print the command without inference.
 EOF
 }
@@ -88,12 +90,16 @@ case "$DRY_RUN" in 0|1) ;; *) printf 'DRY_RUN must be 0 or 1.\n' >&2; exit 2 ;; 
 case "$LOAD_IN_4BIT" in auto|0|1) ;;
     *) printf 'LOAD_IN_4BIT must be auto, 0, or 1.\n' >&2; exit 2 ;;
 esac
+case "$SPLIT" in val|test) ;;
+    *) printf 'SPLIT must be val or test.\n' >&2; exit 2 ;;
+esac
 
 ARGS=(
     "${REPO_ROOT}/scripts/evaluate_sft.py"
     --config "$CONFIG_PATH"
     --expected-method "$EXPECTED_METHOD"
     --output-dir "$OUTPUT_DIR"
+    --split "$SPLIT"
 )
 if [[ -n "$RUN_NAME" ]]; then
     ARGS+=(--run-name "$RUN_NAME")

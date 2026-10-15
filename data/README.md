@@ -119,6 +119,69 @@ report.
 The cleaned JSONL files are canonical intermediate records. Clarifying-question
 labels and LLaMAFactory ShareGPT messages are added in later conversion steps.
 
+## Official test data preparation
+
+Run the test preparation script from the repository root:
+
+```bash
+python data/prepare_test_data.py
+```
+
+The equivalent command with every path stated explicitly is:
+
+```bash
+python data/prepare_test_data.py \
+  --input Dataset/test_release.jsonl \
+  --dataset-root Dataset \
+  --output-dir data/cleaned/test
+```
+
+The released test file has only `sample_id`, `video`, and `text`. It contains
+no emotion, conflict, uncertainty, or clarifying-question truth. The script
+therefore validates and normalizes inference metadata without fabricating
+supervision or registering the test split as a LlamaFactory eval dataset.
+
+The script performs these checks and transformations:
+
+- Require the exact released three-field schema and unique non-empty sample IDs.
+- Infer VT or VA from both standard and generated sample ID formats.
+- Require every video path to be relative to `Dataset/` and to exist locally.
+- Preserve all rows, paired VT/VA samples, duplicates, and official source order.
+- Build separate VL and Omni manifests using the same modality policy as baseline
+  and SFT inference.
+- Abort if a paired VT/VA group disagrees on its video path or supplied text.
+- Write files atomically and record source/output SHA-256 hashes.
+
+Current released test statistics:
+
+| Item | Count |
+| --- | ---: |
+| Released and accepted rows | 734 |
+| Rejected rows | 0 |
+| VT rows | 387 |
+| VA rows | 347 |
+| Logical groups | 458 |
+| Paired VT/VA groups | 276 |
+
+Model-specific test input policy:
+
+| Model path | VT test input | VA test input | Rows |
+| --- | --- | --- | ---: |
+| VL | video + supplied text | visual video frames only | 734 |
+| Omni | video + supplied text; embedded audio disabled | video + embedded audio; supplied text withheld | 734 |
+
+Generated files:
+
+- `data/cleaned/test/test_vl_clean.jsonl`: VL inference manifest.
+- `data/cleaned/test/test_omni_clean.jsonl`: Omni inference manifest.
+- `data/cleaned/test/test_rejected.jsonl`: rejected records; currently empty.
+- `data/cleaned/test/cleaning_report.json`: counts, policies, and hashes.
+
+The normalized manifests retain the released `text` for traceability, but the
+`input_modalities` field excludes it for VA inference. The raw
+`Dataset/test_release.jsonl` remains the canonical input used by the inference
+scripts so that the generated submission CSV exactly follows official order.
+
 ## Generated clarifying-question labels
 
 The Conflict clarifying-question labels under `cleaned/` were generated on
