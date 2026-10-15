@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -38,7 +37,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from qwen25vl_baseline import (  # noqa: E402
     append_jsonl,
-    config_fingerprint,
     grouped_metrics,
     infer_protocol,
     json_dump,
@@ -114,14 +112,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-id", default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def resolve_path(path: Path) -> Path:
@@ -409,9 +399,12 @@ def main() -> None:
     args.model_path = resolve_path(
         args.model_path or Path(config_meta["model_path"])
     )
-    args.adapter_path = resolve_path(
-        args.adapter_path or Path(config_meta["output_dir"])
-    )
+    if args.adapter_path is None:
+        output = Path(config_meta["output_dir"])
+        selection = output / "best_checkpoint.json"
+        args.adapter_path = (Path(json.loads(selection.read_text())["checkpoint"])
+                             if selection.is_file() else output)
+    args.adapter_path = resolve_path(args.adapter_path)
     args.output_dir = resolve_path(args.output_dir)
     args.run_name = args.run_name or (
         f"{args.model_key}_{config_meta['run_name']}_{args.split}"
@@ -440,16 +433,12 @@ def main() -> None:
     adapter_weights = args.adapter_path / "adapter_model.safetensors"
     experiment = {
         "training_config": str(args.config),
-        "training_config_sha256": sha256_file(args.config),
         "training_method": args.method,
         "training_quantization_bit": training_config.get("quantization_bit"),
         "model_key": args.model_key,
         "model_path": str(args.model_path.resolve()),
         "adapter_path": str(args.adapter_path.resolve()),
-        "adapter_sha256": sha256_file(adapter_weights),
         "input_path": str(input_path.resolve()),
-        "dataset_sha256": sha256_file(input_path),
-        "script_sha256": sha256_file(Path(__file__)),
         "split": args.split,
         "limit": args.limit,
         "sample_id": args.sample_id,
@@ -489,10 +478,10 @@ def main() -> None:
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,
     }
-    fingerprint = config_fingerprint(experiment)
+    run_id = args.run_name
     run_config = {
         **experiment,
-        "fingerprint": fingerprint,
+        "run_id": run_id,
         "created_at_utc": utc_now(),
         "python_version": sys.version,
         "platform": platform.platform(),
@@ -507,7 +496,7 @@ def main() -> None:
             path.unlink(missing_ok=True)
     elif config_path.exists():
         previous = json.loads(config_path.read_text(encoding="utf-8"))
-        if previous.get("fingerprint") != fingerprint:
+        if any(previous.get(key) != value for key, value in experiment.items()):
             raise RuntimeError(
                 f"Existing run {args.run_name!r} has a different configuration. "
                 "Use a new --run-name or pass --overwrite."
@@ -521,7 +510,7 @@ def main() -> None:
     completed: dict[str, dict[str, Any]] = {}
     if details_path.exists():
         for record in load_jsonl(details_path):
-            if record.get("experiment_fingerprint") == fingerprint:
+            if record.get("run_id") == run_id:
                 completed[str(record["sample_id"])] = record
 
     print(
@@ -533,7 +522,7 @@ def main() -> None:
                 "resumed": len(completed),
                 "gpu": torch.cuda.get_device_name(0),
                 "quantization": experiment["quantization"],
-                "fingerprint": fingerprint,
+                "run_id": run_id,
             },
             ensure_ascii=False,
         ),
@@ -596,7 +585,7 @@ def main() -> None:
             "protocol": protocol,
             "source_dataset": row.get("source_dataset", "unknown"),
             "video": str(row["video"]),
-            "experiment_fingerprint": fingerprint,
+            "run_id": run_id,
         }
         if args.split == "val":
             base_record.update(
@@ -651,7 +640,7 @@ def main() -> None:
 
     result: dict[str, Any] = {
         "run_name": args.run_name,
-        "experiment_fingerprint": fingerprint,
+        "run_id": run_id,
         "split": args.split,
         "model": str(args.model_path),
         "adapter": str(args.adapter_path),

@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
+import random
 import subprocess
 import tempfile
 from collections import Counter
@@ -112,18 +112,6 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
     path.chmod(0o644)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def stable_score(value: str, seed: str) -> str:
-    return hashlib.sha256(f"{seed}\0{value}".encode()).hexdigest()
-
-
 def validate_source_rows(
     vl_rows: list[dict[str, Any]],
     omni_rows: list[dict[str, Any]],
@@ -192,7 +180,7 @@ def select_questions(
     questions = question_row["questions"]
     if policy == "expand":
         return list(enumerate(questions))
-    index = int(stable_score(sample_id, f"{seed}:question")[:16], 16) % len(questions)
+    index = random.Random(f"{seed}:question:{sample_id}").randrange(len(questions))
     return [(index, questions[index])]
 
 
@@ -386,7 +374,6 @@ def prepare_audio(
                 "source_video": relative_to_repo(source, repo_root),
                 "audio": audio_map[video_rel],
                 "audio_bytes": destination.stat().st_size,
-                "audio_sha256": sha256_file(destination),
                 "sampling_rate": 16000,
                 "channels": 1,
                 "codec": "flac",
@@ -397,6 +384,8 @@ def prepare_audio(
 
 def make_sft_records(
     rows: list[dict[str, Any]],
+    dataset_root: Path,
+    repo_root: Path,
     model_family: str,
     split_name: str,
     questions_by_group: dict[str, dict[str, Any]],
@@ -454,7 +443,7 @@ def make_sft_records(
                     if target_mode == "emotion_only"
                     else SYSTEM_PROMPT
                 ),
-                "videos": [f"Dataset/{row['video']}"],
+                "videos": [relative_to_repo(dataset_root / row['video'], repo_root)],
                 "sample_id": row["sample_id"],
                 "split_group_id": row["split_group_id"],
                 "source_dataset": row["source_dataset"],
@@ -472,13 +461,8 @@ def make_sft_records(
     # Deterministic mixing avoids source-order bias. It also ensures Omni VT
     # and VA rows coexist in Arrow's first conversion batch, so the optional
     # audio column is inferred as list<string> rather than null.
-    return sorted(
-        records,
-        key=lambda record: stable_score(
-            f"{record['sample_id']}\0{record['question_index']}",
-            f"{seed}:order:{model_family}:{split_name}",
-        ),
-    )
+    random.Random(f"{seed}:order:{model_family}:{split_name}").shuffle(records)
+    return records
 
 
 def validate_sft_records(
@@ -652,6 +636,8 @@ def main() -> None:
             target_mode = "full" if split_name == "train" else "emotion_only"
             records = make_sft_records(
                 rows=rows,
+                dataset_root=dataset_root,
+                repo_root=repo_root,
                 model_family=model_family,
                 split_name=split_name,
                 questions_by_group=questions_by_group,
@@ -667,7 +653,6 @@ def main() -> None:
                 records, model_family, repo_root, target_mode
             )
             stats["file"] = relative_to_repo(output_path, repo_root)
-            stats["sha256"] = sha256_file(output_path)
             all_stats[f"{model_family}_{split_name}"] = stats
             family_groups[split_name] = {
                 record["split_group_id"] for record in records
@@ -705,18 +690,12 @@ def main() -> None:
                 },
             },
         },
-        "source_files": {
-            **{
-                relative_to_repo(path, repo_root): sha256_file(path)
-                for path in source_paths.values()
-            },
-            relative_to_repo(
-                questions_dir / "clarifying_questions_by_group.jsonl", repo_root
-            ): sha256_file(questions_dir / "clarifying_questions_by_group.jsonl"),
-            relative_to_repo(
-                questions_dir / "clarifying_questions_by_sample_id.jsonl", repo_root
-            ): sha256_file(questions_dir / "clarifying_questions_by_sample_id.jsonl"),
-        },
+        "source_files": [
+            relative_to_repo(path, repo_root)
+            for path in [*source_paths.values(),
+                         questions_dir / "clarifying_questions_by_group.jsonl",
+                         questions_dir / "clarifying_questions_by_sample_id.jsonl"]
+        ],
         "audio": {
             "files": len(audio_manifest),
             "sampling_rate": 16000,

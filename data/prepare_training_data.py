@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import tempfile
@@ -69,14 +68,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def path_for_report(path: Path, repo_root: Path) -> str:
@@ -415,7 +406,6 @@ def main() -> None:
         "variant": "all" if args.ignore_use_in_main else "use_in_main_true",
         "input": {
             "path": path_for_report(input_path, repo_root),
-            "sha256": sha256_file(input_path),
             "records": len(raw_records),
         },
         "filtering": {
@@ -441,7 +431,6 @@ def main() -> None:
         "vl": {
             "path": path_for_report(vl_path, repo_root),
             "records": len(vl_records),
-            "sha256": sha256_file(vl_path),
             "actions": dict(sorted(vl_actions.items())),
             "source_protocol": distribution(vl_records, "source_protocol"),
             "sample_type": distribution(vl_records, "sample_type"),
@@ -452,7 +441,6 @@ def main() -> None:
         "omni": {
             "path": path_for_report(omni_path, repo_root),
             "records": len(omni_records),
-            "sha256": sha256_file(omni_path),
             "actions": dict(sorted(omni_actions.items())),
             "source_protocol": distribution(omni_records, "source_protocol"),
             "training_protocol": distribution(omni_records, "training_protocol"),

@@ -63,3 +63,8 @@ validation examples contain video and audio but no supplied transcript.
 `load_best_model_at_end` selects checkpoints by emotion-only validation loss.
 This is the SFT training signal, not the competition Macro-F1. Run generation
 and parse `pred_emotion` after training to compare against the baseline metrics.
+
+
+本机 v3 为 `sft/<model>/qlora_sft_v3.yaml`。新增的 `task_balanced_loss` 由项目
+`train_sft.py` 消费，须通过项目启动器运行；直接传给外部 LLaMAFactory CLI 不支持
+该字段。训练后运行 `select_sft_checkpoint.py` 按完整官方验证集 Score 选择 adapter。

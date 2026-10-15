@@ -72,3 +72,7 @@ Qwen2.5-Omni 最初使用
 
 模型 checkpoint、优化器状态、预测明细和原始训练日志属于本地实验产物，存放在
 已被 Git 忽略的 `output/` 目录中。
+
+## QLoRA SFT v3
+
+[按任务字段平衡监督的 v3 实验报告](qlora_sft_v3.md)：三模型完成训练及全部 9 次验证，最佳 Score 分别为 Omni 0.7288、Qwen3-VL 0.7201、Qwen2.5-VL 0.6880。

@@ -34,7 +34,7 @@ Each variant contains:
 - `train_omni_clean.jsonl`: VT records use vision and text; VA records
   use vision, text, and the audio embedded in the referenced video.
 - `train_rejected.jsonl`: rejected sample IDs and rejection reasons.
-- `cleaning_report.json`: input/output hashes, counts, distributions,
+- `cleaning_report.json`: input/output paths, counts, distributions,
   and cleaning actions.
 
 Custom paths and either filtering policy are supported:
@@ -213,4 +213,4 @@ VA audio handling; VT records contain no audio input and remain video-text only.
   ignored by Git.
 - `splits/`: reserved for future experiment-specific partitions; the default
   SFT pipeline uses the official train/validation boundary directly.
-- `manifests/`: dataset hashes and conversion manifests.
+- `manifests/`: dataset statistics and conversion manifests.

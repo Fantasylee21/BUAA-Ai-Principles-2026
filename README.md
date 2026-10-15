@@ -179,7 +179,6 @@ readlink -f models
 ```bash
 mkdir -p third_party
 git clone https://github.com/hiyouga/LlamaFactory.git third_party/LlamaFactory
-git -C third_party/LlamaFactory checkout 97b32d3133b501432141a82949d5c7bc4d94f23a
 ```
 
 如复用本地 checkout：
@@ -189,17 +188,9 @@ mkdir -p third_party
 ln -s /absolute/path/to/LlamaFactory third_party/LlamaFactory
 ```
 
-版本以 `third_party/llamafactory.lock.yaml` 为准。启动脚本会检查实际 HEAD 是否与
-锁文件一致，不一致时拒绝训练。`/third_party/LlamaFactory` 必须保留在
+本机启动器直接使用已安装的 LLaMAFactory，并通过真实训练检查兼容性。`/third_party/LlamaFactory` 必须保留在
 `.gitignore` 中；不要把外部项目源码提交进本仓库，也不要在一次已记录的实验中途
 更新其 commit。
-
-检查版本：
-
-```bash
-git -C third_party/LlamaFactory rev-parse HEAD
-sed -n '1,80p' third_party/llamafactory.lock.yaml
-```
 
 ## 4. 清洗训练集和官方验证集
 
@@ -520,3 +511,17 @@ bash scripts/run_baselines.sh 2
 
 更细的清洗统计和模态规则见 `data/README.md`，脚本参数见 `scripts/README.md`，
 LoRA 配置说明见 `configs/README.md`。
+
+
+## 本机 v3 实验
+
+最新本机训练使用 `configs/sft/<model>/qlora_sft_v3.yaml`，加入按字段归一化的
+任务损失，并在完整官方验证集上按比赛 Score 选择 epoch checkpoint。
+设计、已有结果对照、测试证据和日志路径见 [v3 报告](reports/sft/qlora_sft_v3.md)。
+
+```bash
+conda activate fwt_temp
+python scripts/run_sft_v3.py --gpu 4
+```
+
+三个模型均已完成训练与各轮验证，最佳均为第 3 轮。Omni、Qwen3-VL、Qwen2.5-VL 的最佳 Score 分别为 0.7288、0.7201、0.6880，完整结果见上述 v3 报告。
