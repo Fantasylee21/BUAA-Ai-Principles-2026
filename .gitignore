@@ -107,7 +107,9 @@ se
 # SFT generated data, checkpoints, and experiment logs
 # ============================================================
 /data/llamafactory/generated/
-/output/sft/
+/output/sft/*
+!/output/sft/evaluation/
+!/output/sft/evaluation/**
 /checkpoints/
 /runs/
 /wandb/

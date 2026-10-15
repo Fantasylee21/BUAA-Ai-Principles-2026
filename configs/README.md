@@ -4,6 +4,11 @@ Store immutable LLaMAFactory YAML configurations here. Create a new file for
 each experiment instead of editing a configuration that has already produced a
 reported result.
 
+Training and evaluation launchers accept these YAML paths directly. The
+launchers infer the model family from `model_name_or_path`, use `output_dir` as
+the adapter/checkpoint location, and reject a LoRA/QLoRA launcher mismatch.
+Adding a versioned YAML therefore does not require editing a shell script.
+
 - `sft/qwen25vl/`: Qwen2.5-VL SFT configurations.
 - `sft/qwen3vl/`: Qwen3-VL SFT configurations.
 - `sft/qwen25omni/`: Qwen2.5-Omni SFT configurations.
@@ -16,11 +21,34 @@ Initial LoRA SFT configurations:
 - `sft/qwen3vl/lora_sft_v1.yaml`
 - `sft/qwen25omni/lora_sft_v1.yaml`
 
-All three freeze the modality encoders and multimodal projector, then apply
+Initial QLoRA SFT configurations:
+
+- `sft/qwen25vl/qlora_sft_v1.yaml`
+- `sft/qwen3vl/qlora_sft_v1.yaml`
+- `sft/qwen25omni/qlora_sft_v1.yaml`
+
+All six freeze the modality encoders and multimodal projector, then apply
 rank-16 LoRA to the available language-model linear layers. They use batch size
 1 with 16-step gradient accumulation, BF16, FlashAttention 2, gradient
 checkpointing, three epochs, and official emotion-only validation after every
 epoch.
+
+The QLoRA configs keep the same datasets, modality budgets, LoRA parameters,
+optimizer settings, effective batch size, and validation strategy as the LoRA
+configs. This makes LoRA and QLoRA directly comparable. They load the frozen
+base model with bitsandbytes 4-bit NF4 quantization, enable double
+quantization, and upcast LayerNorm weights to FP32. The trainable adapters
+remain higher precision; `bf16: true` controls mixed-precision computation.
+
+QLoRA requires a CUDA-compatible bitsandbytes installation. The reference
+environment currently uses bitsandbytes 0.50.2. LLaMAFactory requires at least
+0.39.0 for 4-bit bitsandbytes loading. Do not set `quantization_bit` when
+merging the trained adapter into a base model: adapter merging must load the
+original non-quantized checkpoint.
+
+Use `scripts/merge_sft_adapter.sh` for both LoRA and QLoRA merging. It derives a
+minimal export configuration from the selected training YAML and removes the
+training-time quantization settings automatically.
 
 The configs sample at 2 FPS and cap videos at 64 frames. The released train and
 validation videos require at most 38 frames at this rate, so the cap does not

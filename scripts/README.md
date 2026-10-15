@@ -199,38 +199,156 @@ hyperparameters in `configs/` rather than adding them to the conversion script.
 
 ## Run LoRA SFT
 
-`run_lora_sft.sh` launches one of the three versioned configurations and checks
-the LLaMAFactory lock commit before training. Pass the physical GPU index as the
-second argument:
+`run_sft_training.sh` accepts the method, an explicit YAML configuration, and
+the physical GPU index. It checks the method, model path, output directory,
+generated data, and the LLaMAFactory lock commit before training:
 
 ```bash
-bash scripts/run_lora_sft.sh qwen25vl 2
-bash scripts/run_lora_sft.sh qwen3vl 2
-bash scripts/run_lora_sft.sh qwen25omni 2
-```
-
-Run all three sequentially on the same GPU:
-
-```bash
-bash scripts/run_lora_sft.sh all 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen25vl/lora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen3vl/lora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen25omni/lora_sft_v1.yaml 2
 ```
 
 The script uses Python from the active compatible environment by default. A
-named conda environment can be selected with `CONDA_ENV`. Outputs go to
-`output/sft/<model>/lora_sft_v1`, and logs go to `runs/sft/<model>/`.
+named conda environment can be selected with `CONDA_ENV`. The adapter and
+checkpoint directory comes from the YAML `output_dir`; logs go to
+`runs/sft/<model>/`.
 
 `RESUME=auto` is the default and resumes the numerically latest
 `checkpoint-*` directory when present. Use `RESUME=none` for a new output
 directory, or pass an exact checkpoint path. To preserve an existing run,
-choose another output name instead of overwriting it:
+create a new versioned YAML with a different `output_dir`. A one-off output
+override is also available:
 
 ```bash
-RUN_NAME=lora_sft_v2 bash scripts/run_lora_sft.sh qwen25vl 2
+OUTPUT_DIR=output/sft/qwen25vl/lora_sft_debug \
+  bash scripts/run_sft_training.sh lora \
+    configs/sft/qwen25vl/lora_sft_v1.yaml 2
 ```
 
+When testing a one-off `OUTPUT_DIR` run, pass the same directory as
+`ADAPTER_PATH` to the inference launcher. For reported experiments, prefer a
+new YAML whose `output_dir` records the actual adapter location.
+
 Generated ShareGPT data must already exist. Set `PREPARE_DATA=1` to rebuild it
-before launching training. `OUTPUT_ROOT` can redirect all checkpoints and
-adapters to another storage location.
+before launching training. `OUTPUT_DIR` can temporarily override the YAML
+checkpoint and adapter location.
 
 Use `DRY_RUN=1` to run path, lock, dataset, checkpoint, and command checks
 without loading a model or starting training.
+
+## Run QLoRA SFT
+
+Use the same `run_sft_training.sh` entry with method `qlora`. It requires the
+selected YAML to contain a supported 4-bit QLoRA configuration and checks that
+bitsandbytes imports successfully and CUDA is visible before a real run.
+
+Run one model on a selected physical GPU:
+
+```bash
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25vl/qlora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh qlora configs/sft/qwen3vl/qlora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v1.yaml 2
+```
+
+Validate paths, the LLaMAFactory lock, generated datasets, checkpoint resume,
+and commands without loading a model:
+
+```bash
+DRY_RUN=1 bash scripts/run_sft_training.sh qlora \
+  configs/sft/qwen3vl/qlora_sft_v1.yaml 2
+```
+
+The same `CONDA_ENV`, `OUTPUT_DIR`, `RESUME`, and `PREPARE_DATA` overrides are
+supported. QLoRA requires a CUDA-compatible bitsandbytes installation; the
+reference environment uses version 0.50.2.
+
+## Evaluate LoRA And QLoRA SFT Adapters
+
+`evaluate_sft.py` and `run_sft_inference.sh` use the selected training YAML as
+the experiment identity. They read `model_name_or_path` and `output_dir` from
+that YAML, infer the model family, attach the resulting PEFT adapter, and
+evaluate the complete official validation split. QLoRA YAML files load the
+base model with bitsandbytes NF4 4-bit by default; LoRA YAML files load it in
+BF16. VT samples use video plus supplied text; VA samples use visual frames
+only, matching the corresponding baseline input policy.
+
+Evaluate a LoRA adapter:
+
+```bash
+bash scripts/run_sft_inference.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 7
+```
+
+Evaluate a QLoRA adapter:
+
+```bash
+bash scripts/run_sft_inference.sh qlora \
+  configs/sft/qwen3vl/qlora_sft_v1.yaml 7
+```
+
+Run a small smoke test before the full evaluation:
+
+```bash
+LIMIT=3 OVERWRITE=1 bash scripts/run_sft_inference.sh qlora \
+  configs/sft/qwen3vl/qlora_sft_v1.yaml 7
+```
+
+The evaluator is resumable by default and writes per-sample details,
+competition-format predictions, metrics, and an experiment fingerprint under
+`output/sft/evaluation/`. The fingerprint includes the YAML path and SHA-256.
+Set `OVERWRITE=1` to restart a run. `LOAD_IN_4BIT=auto` follows the YAML;
+explicit `0` or `1` enables a separate loading ablation. Use another
+`RUN_NAME` when changing this setting.
+
+The evaluator also supports Qwen2.5-Omni. Its VT samples use video plus supplied
+text with embedded audio disabled; VA samples use video plus embedded audio and
+withhold supplied text, matching the Omni baseline policy. `ffmpeg` must be
+available for decoding VA audio.
+
+## Merge An SFT Adapter
+
+`merge_sft_adapter.sh` merges either a LoRA or QLoRA PEFT adapter into the
+original non-quantized base model. Pass the training YAML, an optional final
+adapter or `checkpoint-*` directory, and the physical GPU index:
+
+```bash
+bash scripts/merge_sft_adapter.sh \
+  configs/sft/qwen25vl/qlora_sft_v1.yaml \
+  output/sft/qwen25vl/qlora_sft_v1/checkpoint-264 \
+  2
+```
+
+When the adapter path is omitted, the script uses `output_dir` from the YAML.
+The merged model is written to `<adapter_path>/merged_model/`. The output must
+be a new or empty child directory so that full-model files cannot overwrite the
+source adapter.
+
+The generated LLaMAFactory export configuration deliberately omits
+`quantization_bit`, `quantization_method`, and other QLoRA loading options.
+QLoRA therefore reloads the original BF16/FP16 base checkpoint before merging,
+which is required for a valid full model.
+
+Validate paths, the adapter/base-model match, LLaMAFactory lock, and generated
+export configuration without loading weights:
+
+```bash
+CONDA_ENV=your_environment DRY_RUN=1 \
+  bash scripts/merge_sft_adapter.sh \
+    configs/sft/qwen3vl/qlora_sft_v1.yaml \
+    output/sft/qwen3vl/qlora_sft_v1/checkpoint-396 \
+    2
+```
+
+Merging uses CPU by default. To let Transformers place the model on the
+selected GPU, use `EXPORT_DEVICE=auto`. `EXPORT_SIZE` controls the maximum
+weight shard size in GB, and `MERGED_SUBDIR` changes the child directory name:
+
+```bash
+EXPORT_DEVICE=auto EXPORT_SIZE=4 MERGED_SUBDIR=merged_bf16 \
+  bash scripts/merge_sft_adapter.sh CONFIG.yaml ADAPTER_PATH 2
+```
+
+After export, the script verifies `config.json` and model weight shards, then
+copies the source training YAML and generated export YAML into the merged model
+directory for reproducibility.
