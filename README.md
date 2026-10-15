@@ -64,7 +64,10 @@ VT 样本均输入视频画面和官方提供的文本。VA 样本中，两个 V
 │   └── export/                      # LoRA 合并/导出配置预留目录
 ├── scripts/
 │   ├── prepare_sft_data.py          # 转换为 LLaMAFactory 多模态格式
-│   ├── run_lora_sft.sh              # LoRA SFT 统一启动脚本
+│   ├── run_sft_training.sh          # 按方法和 YAML 启动 SFT
+│   ├── run_sft_inference.sh         # 按方法和 YAML 测试 adapter
+│   ├── merge_sft_adapter.sh         # 合并 LoRA/QLoRA adapter 与原始权重
+│   ├── evaluate_sft.py              # LoRA/QLoRA 通用评测实现
 │   └── run_baselines.sh             # 三个基线的复现脚本
 ├── output/
 │   ├── baseline/                    # 已记录的基线预测和指标
@@ -102,6 +105,7 @@ PyTorch、CUDA、Transformers 和 FlashAttention 版本也可以使用，但需�
 - NVIDIA GPU 和可用的 CUDA 驱动；
 - `git`；
 - `ffmpeg`，用于从 VA 视频中提取 Omni 训练所需的音频；
+- CUDA 兼容的 `bitsandbytes`，用于 QLoRA 4-bit 量化；
 - 与当前 PyTorch/CUDA 匹配的 FlashAttention 2，因为现有 YAML 使用
   `flash_attn: fa2`。
 
@@ -331,7 +335,7 @@ use_audio_in_video: true
 `dataset_info.json` 和 YAML。由于媒体路径相对于仓库根目录解析，训练应从仓库
 根目录启动。
 
-## 7. 配置 LoRA SFT YAML
+## 7. 配置 LoRA/QLoRA SFT YAML
 
 当前初始配置：
 
@@ -339,9 +343,12 @@ use_audio_in_video: true
 configs/sft/qwen25vl/lora_sft_v1.yaml
 configs/sft/qwen3vl/lora_sft_v1.yaml
 configs/sft/qwen25omni/lora_sft_v1.yaml
+configs/sft/qwen25vl/qlora_sft_v1.yaml
+configs/sft/qwen3vl/qlora_sft_v1.yaml
+configs/sft/qwen25omni/qlora_sft_v1.yaml
 ```
 
-三份配置均冻结模态编码器和多模态 projector，对语言模型线性层应用 LoRA：
+六份配置均冻结模态编码器和多模态 projector，对语言模型线性层应用 LoRA：
 
 - LoRA rank 16、alpha 32、dropout 0.05；
 - batch size 1、gradient accumulation 16；
@@ -350,67 +357,81 @@ configs/sft/qwen25omni/lora_sft_v1.yaml
 - 视频采样 2 FPS，最多 64 帧；
 - VL `cutoff_len=8192`，Omni `cutoff_len=6144`。
 
+QLoRA 配置在相同训练参数上额外使用 bitsandbytes 4-bit NF4、双重量化和 FP32
+LayerNorm，从而可以和普通 LoRA 直接比较。
+
 这些是单卡实验的起始配置，不保证适合所有 GPU。每次正式实验都应创建新的、
 带版本号的 YAML，例如 `lora_sft_v2.yaml`，不要修改已经产生报告的配置文件。
-新增 YAML 后还需要同步更新 `scripts/run_lora_sft.sh` 中对应模型的 `config_path`，
-或直接用 LLaMAFactory CLI 启动该 YAML；只修改 `RUN_NAME` 不会改变训练参数。
+训练和测试脚本都直接接收 YAML 路径，因此新增配置后不需要修改脚本。YAML 中的
+`model_name_or_path` 用于定位基座模型，`output_dir` 同时用于保存训练结果和定位
+待测试的 adapter。
 
 ## 8. 执行 SFT
 
 先进行 dry run，检查模型、数据、LLaMAFactory commit、输出路径和最终命令：
 
 ```bash
-DRY_RUN=1 bash scripts/run_lora_sft.sh all 2
+DRY_RUN=1 bash scripts/run_sft_training.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 2
+DRY_RUN=1 bash scripts/run_sft_training.sh qlora \
+  configs/sft/qwen25vl/qlora_sft_v1.yaml 2
 ```
 
 第二个参数是物理 GPU 编号。分别训练：
 
 ```bash
-bash scripts/run_lora_sft.sh qwen25vl 2
-bash scripts/run_lora_sft.sh qwen3vl 2
-bash scripts/run_lora_sft.sh qwen25omni 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen25vl/lora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen3vl/lora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh lora configs/sft/qwen25omni/lora_sft_v1.yaml 2
 ```
 
-也可以在同一张卡上依次执行三个实验：
+对应的 QLoRA 训练命令为：
 
 ```bash
-bash scripts/run_lora_sft.sh all 2
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25vl/qlora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh qlora configs/sft/qwen3vl/qlora_sft_v1.yaml 2
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v1.yaml 2
 ```
 
 脚本默认使用当前 shell 中的 `python`。如需使用指定 conda 环境，可显式设置
 `CONDA_ENV`，但项目文档不依赖任何个人环境名：
 
 ```bash
-CONDA_ENV=your_environment bash scripts/run_lora_sft.sh qwen25vl 2
+CONDA_ENV=your_environment bash scripts/run_sft_training.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 2
 ```
 
 常用覆盖项：
 
 ```bash
 # 启动前重新转换数据
-PREPARE_DATA=1 bash scripts/run_lora_sft.sh qwen25vl 2
+PREPARE_DATA=1 bash scripts/run_sft_training.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 2
 
-# 使用新的实验名，避免覆盖已有结果
-RUN_NAME=lora_sft_v2 bash scripts/run_lora_sft.sh qwen25vl 2
-
-# 将大体积 checkpoint 写到其他磁盘
-OUTPUT_ROOT=/absolute/path/to/output/sft \
-  bash scripts/run_lora_sft.sh qwen25vl 2
+# 临时覆盖 YAML 中的 output_dir
+OUTPUT_DIR=/absolute/path/to/output/sft/qwen25vl/lora_debug \
+  bash scripts/run_sft_training.sh lora \
+    configs/sft/qwen25vl/lora_sft_v1.yaml 2
 
 # 不自动续训
-RESUME=none bash scripts/run_lora_sft.sh qwen25vl 2
+RESUME=none bash scripts/run_sft_training.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 2
 
 # 从指定 checkpoint 续训
 RESUME=/absolute/path/to/checkpoint-xxx \
-  bash scripts/run_lora_sft.sh qwen25vl 2
+  bash scripts/run_sft_training.sh lora \
+    configs/sft/qwen25vl/lora_sft_v1.yaml 2
 ```
 
 `RESUME=auto` 为默认行为，会在当前输出目录中选择编号最大的 `checkpoint-*`。
+QLoRA 脚本支持相同的环境变量覆盖项。正式实验应优先复制并修改版本化 YAML，
+而不是通过 `OUTPUT_DIR` 临时覆盖。若确实使用临时输出目录，测试时应通过
+`ADAPTER_PATH` 指向同一目录。
 默认输出和日志位置：
 
 ```text
-output/sft/<model>/<run_name>/
-runs/sft/<model>/<run_name>_<timestamp>.log
+<YAML output_dir>/
+runs/sft/<model>/<YAML output_dir basename>_<timestamp>.log
 ```
 
 ## 9. 验证和结果记录
@@ -423,6 +444,42 @@ baseline 一致的生成和解析流程得到：
 - `Conflict_accuracy`
 - `Aligned_calibration`
 - `Score`
+
+LoRA 和 QLoRA 测试也显式选择训练时使用的 YAML：
+
+```bash
+bash scripts/run_sft_inference.sh lora \
+  configs/sft/qwen25vl/lora_sft_v1.yaml 2
+bash scripts/run_sft_inference.sh qlora \
+  configs/sft/qwen3vl/qlora_sft_v1.yaml 2
+```
+
+测试脚本从 YAML 读取基座模型和 adapter 目录。QLoRA 默认以 NF4 4-bit 加载基座，
+LoRA 默认以 BF16 加载；可通过 `LOAD_IN_4BIT=0|1` 做单独消融。`LIMIT=3` 可用于
+小规模冒烟测试，`OVERWRITE=1` 会重新开始对应结果，`RUN_NAME` 可指定新的结果前缀。
+通用评测实现也支持 Qwen2.5-Omni：VT 使用视频和给定文本并关闭视频音频，VA 使用
+视频和内嵌音频但不提供文本，与 Omni baseline 的输入策略保持一致。测试 Omni 前
+需要确保系统中可以执行 `ffmpeg`。
+
+需要将某个最终 adapter 或中间 checkpoint 合并为完整 Hugging Face 模型时：
+
+```bash
+bash scripts/merge_sft_adapter.sh \
+  configs/sft/qwen25vl/qlora_sft_v1.yaml \
+  output/sft/qwen25vl/qlora_sft_v1/checkpoint-264 \
+  2
+```
+
+默认在 adapter 目录下生成 `merged_model/`，上述命令的输出位置为：
+
+```text
+output/sft/qwen25vl/qlora_sft_v1/checkpoint-264/merged_model/
+```
+
+脚本同时支持 LoRA 和 QLoRA。QLoRA 合并时不会加载训练阶段的 4-bit 基座，而是
+重新加载 YAML 指定的原始非量化权重，再合并 PEFT adapter。默认使用 CPU；设置
+`EXPORT_DEVICE=auto` 可使用第三个参数指定的 GPU。正式合并前可设置 `DRY_RUN=1`
+检查生成的 LLaMAFactory export 配置。
 
 checkpoint、optimizer state、原始日志和生成数据不提交 Git；将使用的模型、commit、
 YAML 路径、数据清单/hash、GPU、显存、训练耗时和四项最终指标整理到
