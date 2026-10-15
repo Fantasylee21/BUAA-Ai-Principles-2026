@@ -1,0 +1,9 @@
+### LoRA merge export for qwen25omni lora_sft_v1 (best checkpoint loaded at end of training)
+model_name_or_path: models/Qwen2.5-Omni-3B
+adapter_name_or_path: output/sft/qwen25omni/lora_sft_v1
+template: qwen2_omni
+finetuning_type: lora
+trust_remote_code: true
+export_dir: output/sft/qwen25omni/lora_sft_v1_merged
+export_size: 5
+export_legacy_format: false
