@@ -21,6 +21,46 @@ Score = 0.5 * Macro-F1
 - Qwen3-VL-4B-Instruct
 - Qwen2.5-Omni-3B
 
+## SFT 最终交付版本（v4 / sft-final）
+
+本组当前选定的 SFT 交付方案是 `qlora_sft_v4_resample2x`，代码版本由
+`sft-final` 标签固定。首选交付模型为 Qwen2.5-Omni-3B；三个模型的配置均保留在
+`configs/sft/<model>/qlora_sft_v4_resample2x.yaml`。
+
+v4 沿用 v3 的字段平衡损失（emotion 0.5、uncertainty 0.4、其余回答 0.1，
+Conflict 不确定性权重 2），额外通过 LLaMAFactory 原生 `num_samples` 将 Conflict
+训练样本采样至原数量的 2 倍。不是新增人工标签，也不是从 v3 adapter 续训；默认从
+原始基座开始训练。训练样本数为 VL 2,482、Omni 3,795，官方验证集保持 666 条。
+
+项目成员提供的 Kaggle 提交截图中，Omni v4 的 Public Score 为 **0.90813**；
+这是公开榜记录，不是本地验证分数或最终隐藏榜成绩。本仓库此次更新包含训练配置和
+重采样实现，不包含该提交对应的 adapter、准确 checkpoint 路径或完整推理记录。
+这些产物应由训练执行者随模型交付，以便复现。
+
+使用顺序（在兼容的 Linux/CUDA 环境、仓库根目录执行）：
+
+1. 按下文准备基座、原始数据、依赖和单问题 SFT 数据。
+2. `python scripts/prepare_resampled_sft_data.py` 生成重采样数据注册文件。
+3. 使用对应 v4 YAML 启动训练；若已取得训练好的 adapter，则跳过训练，直接推理。
+4. 推理时显式设置 `ADAPTER_PATH` 为实际交付 checkpoint，不要沿用 v3 的目录。
+
+```bash
+# 新训练示例；已有权重时不需要执行。
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+
+# 已有权重：先验证，再对测试集生成 CSV。
+# 将 /absolute/path/to/v4-adapter 替换为真实路径；量化精度须与交付记录一致。
+ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omni_v4_val_nf4 \
+  bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omni_v4_test_nf4 \
+  bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+```
+
+权重通过团队私有 Hugging Face 模型仓库另行交付，链接待补充；Git 标签不包含权重。
+交付时注明基座版本、checkpoint、代码版本、依赖、NF4/BF16 推理方式和加载命令。
+若只交付 adapter，使用者仍须下载原始基座。原始课程视频和标注不随模型上传。
+详见 [配置说明](configs/README.md) 和 [脚本说明](scripts/README.md)。
+
 ## 当前 Baseline 结果
 
 以下结果来自官方验证集全部 666 条样本，三个模型均使用记录为
