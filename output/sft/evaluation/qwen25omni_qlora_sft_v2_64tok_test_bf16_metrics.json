@@ -1,0 +1,25 @@
+{
+  "run_name": "qwen25omni_qlora_sft_v2_64tok_test_bf16",
+  "experiment_fingerprint": "13859888b398d9dc",
+  "split": "test",
+  "model": "/mnt/hdd2/zsm/project/TaskEhc/models/Qwen2.5-Omni-3B",
+  "adapter": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/qwen25omni/qlora_sft_v2_64tok",
+  "quantization": "bf16",
+  "samples": 734,
+  "elapsed_seconds_this_invocation": 2519.71,
+  "inference_errors": 0,
+  "parse_status_counts": {
+    "json": 734
+  },
+  "max_peak_cuda_allocated_bytes": 14210997248,
+  "max_peak_cuda_reserved_bytes": 16118710272,
+  "protocol_counts": {
+    "VT": 387,
+    "VA": 347
+  },
+  "files": {
+    "predictions": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen25omni_qlora_sft_v2_64tok_test_bf16_predictions.csv",
+    "details": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen25omni_qlora_sft_v2_64tok_test_bf16_details.jsonl",
+    "run_config": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen25omni_qlora_sft_v2_64tok_test_bf16_run_config.json"
+  }
+}

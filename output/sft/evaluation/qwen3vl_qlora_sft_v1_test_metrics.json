@@ -1,0 +1,25 @@
+{
+  "run_name": "qwen3vl_qlora_sft_v1_test",
+  "experiment_fingerprint": "378a9dc9c80d3edd",
+  "split": "test",
+  "model": "/mnt/hdd2/zsm/project/TaskEhc/models/Qwen3-VL-4B-Instruct",
+  "adapter": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/qwen3vl/qlora_sft_v1",
+  "quantization": "bnb_nf4_double_quant",
+  "samples": 734,
+  "elapsed_seconds_this_invocation": 2985.71,
+  "inference_errors": 0,
+  "parse_status_counts": {
+    "json": 734
+  },
+  "max_peak_cuda_allocated_bytes": 8218334720,
+  "max_peak_cuda_reserved_bytes": 8942256128,
+  "protocol_counts": {
+    "VT": 387,
+    "VA": 347
+  },
+  "files": {
+    "predictions": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen3vl_qlora_sft_v1_test_predictions.csv",
+    "details": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen3vl_qlora_sft_v1_test_details.jsonl",
+    "run_config": "/mnt/ssd5/zsm/project/AIteamwork/BUAA-Ai-Principles-2026/output/sft/evaluation/qwen3vl_qlora_sft_v1_test_run_config.json"
+  }
+}
