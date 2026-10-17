@@ -68,3 +68,28 @@ and parse `pred_emotion` after training to compare against the baseline metrics.
 本机 v3 为 `sft/<model>/qlora_sft_v3.yaml`。新增的 `task_balanced_loss` 由项目
 `train_sft.py` 消费，须通过项目启动器运行；直接传给外部 LLaMAFactory CLI 不支持
 该字段。训练后运行 `select_sft_checkpoint.py` 按完整官方验证集 Score 选择 adapter。
+
+### Conflict 重采样实验
+
+`sft/<model>/qlora_sft_v4_resample2x.yaml` 在 v3 基础上增加 Conflict 过采样。
+先准备分组文件，再通过原启动器训练，例如 Omni：
+
+```bash
+conda activate fwt_temp
+python scripts/prepare_resampled_sft_data.py
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 6
+```
+
+准备脚本只拆分已有单问题训练数据，保留原媒体、问题和标签；不修改 v3 数据文件。
+框架先保留所有 Conflict 样本，再有放回随机补足至原条数的 2 倍，Aligned 不重复。
+VL 为 1,726 Aligned + 756 Conflict = 2,482 条；Omni 为 2,913 + 882 = 3,795 条。
+验证集直接引用原 666 条数据，测试集不参与。重复抽样由训练 seed 控制，在数据加载时
+生成，后续 epoch 对该数据洗牌，不是每轮重新生成重复样本。
+
+重采样配置单独存于 `data/llamafactory/generated/resampled_2x/dataset_info.json`，
+使用原生 `num_samples` 和 `mix_strategy: concat`；无需修改 Trainer。
+新配置沿用 v3 的 Conflict 损失权重 2，两种作用会叠加；3 epoch 的总优化步数也会增加。
+如需单独考察采样、排除额外损失加权，可另设 `conflict_multiplier: 1.0` 的对照。
+改变倍率可用 `--conflict-factor N --output-dir ...`，同时调整 YAML 的 `dataset_dir`。
+输出写入独立的 `output/sft/<model>/qlora_sft_v4_resample2x/`；未加载 v3 adapter，
+这是从相同基座开始的新训练实验。

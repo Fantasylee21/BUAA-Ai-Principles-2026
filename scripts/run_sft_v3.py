@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train three v3 adapters, then compare all epoch checkpoints on validation."""
+"""Train SFT adapters, then compare all epoch checkpoints on validation."""
 
 import argparse
 from datetime import datetime
@@ -13,15 +13,17 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpu", default="4")
+    parser.add_argument("--version", choices=["v3", "v4_resample2x"], default="v3")
     parser.add_argument("--models", nargs="+", choices=["qwen25omni", "qwen3vl", "qwen25vl"],
                         default=["qwen25omni", "qwen3vl", "qwen25vl"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     env = {**os.environ, "CONDA_ENV": "fwt_temp", "CUDA_VISIBLE_DEVICES": args.gpu,
            "OMP_NUM_THREADS": "4", "TOKENIZERS_PARALLELISM": "false"}
-    status_file = root / "runs/sft/v3_queue_status.json"
+    run_name = f"qlora_sft_{args.version}"
+    status_file = root / f"runs/sft/{args.version}_queue_status.json"
     status_file.parent.mkdir(parents=True, exist_ok=True)
-    status_file.with_name("v3_queue.pid").write_text(str(os.getpid()) + "\n")
+    status_file.with_name(f"{args.version}_queue.pid").write_text(str(os.getpid()) + "\n")
     status = {"gpu": args.gpu, "models": {key: {"state": "queued"} for key in args.models}}
 
     def update(key, state, **extra):
@@ -32,8 +34,8 @@ def main():
 
     trained = []
     for key in args.models:
-        config = root / f"configs/sft/{key}/qlora_sft_v3.yaml"
-        if (root / f"output/sft/{key}/qlora_sft_v3/train_results.json").is_file():
+        config = root / f"configs/sft/{key}/{run_name}.yaml"
+        if (root / f"output/sft/{key}/{run_name}/train_results.json").is_file():
             update(key, "trained", config=str(config), reused_completed_training=True)
             trained.append((key, config))
             continue
