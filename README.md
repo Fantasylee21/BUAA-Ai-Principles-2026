@@ -67,22 +67,49 @@ SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omn
 若只交付 adapter，使用者仍须下载原始基座。原始课程视频和标注不随模型上传。
 详见 [配置说明](configs/README.md) 和 [脚本说明](scripts/README.md)。
 
-## 当前 Baseline 结果
+## Baseline 与 SFT v3 / v4 验证结果
 
-以下结果来自官方验证集全部 666 条样本，三个模型均使用记录为
-`native_default` 的原生输入配置，推理错误数均为 0。Baseline 与 SFT inference
-统一使用 `sft_prompt.py` 中的 system prompt、target instruction 和协议描述：
+以下均为完整官方验证集 **666 条**样本上的结果，不是 Kaggle 公开榜分数。
+Baseline 使用统一 prompt 的 BF16 推理记录；v3/v4 来自对应实验报告。
+这些结果用于展示项目进展，不构成完全控制环境与推理精度的消融实验。
+尤其 v4 的原始运行配置与指标文件尚待训练执行者补充，不能将差值全部归因于采样。
 
-| 模型 | VA 输入 | Macro-F1 | Conflict accuracy | Aligned calibration | Score | 峰值保留显存 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen2.5-VL-3B | 仅视频画面 | 0.483716 | 0.000000 | **1.000000** | 0.441858 | 11.51 GiB |
-| Qwen3-VL-4B | 仅视频画面 | **0.509000** | **0.013514** | **1.000000** | **0.458554** | 14.48 GiB |
-| Qwen2.5-Omni-3B | 视频画面 + 音频 | 0.487326 | 0.000000 | **1.000000** | 0.443663 | 23.10 GiB |
+| 模型 | 版本 | Macro-F1 | Conflict accuracy | Aligned calibration | 验证 Score |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen2.5-VL-3B | Baseline BF16 | 0.4837 | 0.0000 | 1.0000 | 0.4419 |
+| Qwen2.5-VL-3B | QLoRA v3 | 0.6057 | 0.6622 | 0.9324 | 0.6880 |
+| Qwen2.5-VL-3B | QLoRA v4 | 0.5977 | 0.6757 | 0.9679 | **0.6952** |
+| Qwen3-VL-4B | Baseline BF16 | 0.5090 | 0.0135 | 1.0000 | 0.4586 |
+| Qwen3-VL-4B | QLoRA v3 | 0.6185 | 0.7568 | 0.9189 | **0.7201** |
+| Qwen3-VL-4B | QLoRA v4 | 0.6186 | 0.7297 | 0.9139 | 0.7110 |
+| Qwen2.5-Omni-3B | Baseline BF16 | 0.4873 | 0.0000 | 1.0000 | 0.4437 |
+| Qwen2.5-Omni-3B | QLoRA v3 | 0.6340 | 0.7432 | 0.9443 | **0.7288** |
+| Qwen2.5-Omni-3B | QLoRA v4 | 0.6369 | 0.6892 | 0.9662 | 0.7185 |
 
-VT 样本均输入视频画面和官方提供的文本。VA 样本中，两个 VL 模型不读取音频和
-文本，只输入视频画面；Qwen2.5-Omni 输入视频画面和内嵌音频，不提供官方文本。
-完整逐样本预测、运行配置和未四舍五入的指标保存在 `output/baseline/`；Baseline
-与 QLoRA SFT 的详细同口径对比见 `reports/sft/README.md`。
+粗体标记各模型表内最高验证 Score。v4 相对 Baseline 的验证 Score 提升约为
+Qwen2.5-VL **+0.2533**、Qwen3-VL **+0.2524**、Omni **+0.2748**
+（按表中四舍五入值计算）。相对 v3，v4 仅在 Qwen2.5-VL 上提高验证综合分；
+Omni v3 仍是本表验证分最高的模型。
+
+评估输入保持项目协议：VT 使用视频与提供的文字；VA 对两个 VL 模型只提供视频
+画面，对 Omni 提供视频及音频而不提供文字。Baseline 使用 `native_default`，
+峰值保留显存分别为 11.51 / 14.48 / 23.10 GiB；这些显存值不代表 SFT 训练需求。
+Baseline 原始指标位于 `output/baseline/`；详细设置与来源见
+[实验汇总](reports/sft/README.md)、[v3 报告](reports/sft/qlora_sft_v3.md) 和
+[v4 报告](reports/sft/qlora_sft_v4.md)。
+
+### Kaggle 公开榜记录（与验证集分开）
+
+以下来自项目成员提供的提交截图，均为 Omni，不能与上表验证分直接比较。
+
+| 提交版本 | Public Score |
+| --- | ---: |
+| QLoRA v2，4-bit 推理 | 0.90644 |
+| QLoRA v3，checkpoint-630 | 0.90386 |
+| QLoRA v4，resample2x | **0.90813** |
+
+公开榜截图中 v4 最高，因此当前选定 v4 交付；这不是最终隐藏榜结果，
+也不意味着 v4 在本地验证上全面优于 v3。
 
 ## 项目结构
 
