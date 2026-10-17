@@ -33,9 +33,14 @@ Conflict 不确定性权重 2），额外通过 LLaMAFactory 原生 `num_samples
 原始基座开始训练。训练样本数为 VL 2,482、Omni 3,795，官方验证集保持 666 条。
 
 项目成员提供的 Kaggle 提交截图中，Omni v4 的 Public Score 为 **0.90813**；
-这是公开榜记录，不是本地验证分数或最终隐藏榜成绩。本仓库此次更新包含训练配置和
-重采样实现，不包含该提交对应的 adapter、准确 checkpoint 路径或完整推理记录。
-这些产物应由训练执行者随模型交付，以便复现。
+这是公开榜记录，不是本地验证分数或最终隐藏榜成绩。训练执行者补充的
+[v4 实验分析](reports/sft/qlora_sft_v4.md) 记录：Omni、Qwen3-VL、Qwen2.5-VL
+的本地验证 Score 分别为 **0.7185、0.7110、0.6952**；只有 Qwen2.5-VL 高于
+各自的 v3 验证结果。选择 Omni v4 交付不代表其验证分数全面优于 v3。
+
+仓库已包含配置、采样实现和分析文档；v4 原始指标、日志、提交对应 adapter、
+准确 checkpoint 路径及完整推理记录仍需训练执行者交付，以便独立复核。
+`sft-final` 保留原代码快照，本分析文档在标签之后补充到 `main`。
 
 使用顺序（在兼容的 Linux/CUDA 环境、仓库根目录执行）：
 
@@ -56,7 +61,8 @@ SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omn
   bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
 ```
 
-权重通过团队私有 Hugging Face 模型仓库另行交付，链接待补充；Git 标签不包含权重。
+权重通过团队私有 [Hugging Face 模型仓库](https://huggingface.co/BUAA-AI/qwen25omni-sft)
+另行交付；地址已创建，权重上传状态待确认。Git 标签不包含权重。
 交付时注明基座版本、checkpoint、代码版本、依赖、NF4/BF16 推理方式和加载命令。
 若只交付 adapter，使用者仍须下载原始基座。原始课程视频和标注不随模型上传。
 详见 [配置说明](configs/README.md) 和 [脚本说明](scripts/README.md)。
