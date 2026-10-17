@@ -11,7 +11,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 RESUME="${RESUME:-auto}"
 PREPARE_DATA="${PREPARE_DATA:-0}"
 DRY_RUN="${DRY_RUN:-0}"
-LOCK_FILE="${REPO_ROOT}/third_party/llamafactory.lock.yaml"
 LLAMAFACTORY_DIR="${REPO_ROOT}/third_party/LlamaFactory"
 DATASET_INFO="${REPO_ROOT}/data/llamafactory/dataset_info.json"
 
@@ -68,7 +67,6 @@ resolve_input_path() {
 CONFIG_PATH="$(resolve_input_path "$CONFIG_INPUT")"
 require_file "$CONFIG_PATH"
 require_directory "$LLAMAFACTORY_DIR"
-require_file "$LOCK_FILE"
 require_file "$DATASET_INFO"
 
 if [[ -n "$CONDA_ENV" ]]; then
@@ -103,14 +101,6 @@ RUN_NAME="${CONFIG_META[3]}"
 
 require_directory "$MODEL_DIR"
 
-EXPECTED_COMMIT="$(sed -n 's/^  commit: //p' "$LOCK_FILE")"
-ACTUAL_COMMIT="$(git -C "$LLAMAFACTORY_DIR" rev-parse HEAD)"
-if [[ -z "$EXPECTED_COMMIT" || "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]]; then
-    printf 'LLaMAFactory lock mismatch: expected %s, found %s\n' \
-        "${EXPECTED_COMMIT:-missing}" "$ACTUAL_COMMIT" >&2
-    exit 1
-fi
-
 if [[ "$PREPARE_DATA" == "1" ]]; then
     "${PYTHON_RUNNER[@]}" "${REPO_ROOT}/scripts/prepare_sft_data.py"
 elif [[ "$PREPARE_DATA" != "0" ]]; then
@@ -140,6 +130,16 @@ fi
 RUN_NAME="$(basename "$OUTPUT_DIR")"
 LOG_DIR="${REPO_ROOT}/runs/sft/${MODEL_KEY}"
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR" "${REPO_ROOT}/tmp/hf_datasets"
+if [[ "$RUN_NAME" == "qlora_sft_v3" && "$DRY_RUN" == "0" ]]; then
+    # A model may be launched on another GPU while the original queue is active.
+    # Wait for that training, then let the queue proceed directly to evaluation.
+    exec 9>"${OUTPUT_DIR}/training.lock"
+    flock 9
+    if [[ -f "${OUTPUT_DIR}/train_results.json" ]]; then
+        printf 'Training already completed: %s\n' "$OUTPUT_DIR"
+        exit 0
+    fi
+fi
 LOG_PATH="${LOG_DIR}/${RUN_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
 if [[ "$EXPECTED_METHOD" == "qlora" && "$DRY_RUN" == "0" ]]; then
@@ -173,7 +173,7 @@ printf 'Config: %s\nOutput: %s\nLog: %s\n' \
     "$CONFIG_PATH" "$OUTPUT_DIR" "$LOG_PATH"
 
 if [[ "$DRY_RUN" == "1" ]]; then
-    printf 'Dry run command: CUDA_VISIBLE_DEVICES=%q python -m llamafactory.cli train %q' \
+    printf 'Dry run command: CUDA_VISIBLE_DEVICES=%q python scripts/train_sft.py %q' \
         "$GPU_ID" "$CONFIG_PATH"
     printf ' %q' "${TRAIN_OVERRIDES[@]}"
     printf '\n'
@@ -183,12 +183,13 @@ fi
 (
     cd "$REPO_ROOT"
     CUDA_VISIBLE_DEVICES="$GPU_ID" \
-    FORCE_TORCHRUN=1 \
+    FORCE_TORCHRUN=0 \
     NPROC_PER_NODE=1 \
     PYTHONPATH="${LLAMAFACTORY_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-    HF_DATASETS_CACHE="${REPO_ROOT}/tmp/hf_datasets" \
+    HF_DATASETS_CACHE="${REPO_ROOT}/tmp/hf_datasets/${MODEL_KEY}" \
     PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     TOKENIZERS_PARALLELISM=false \
-    "${PYTHON_RUNNER[@]}" -m llamafactory.cli train \
+    OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" \
+    "${PYTHON_RUNNER[@]}" "${REPO_ROOT}/scripts/train_sft.py" \
         "$CONFIG_PATH" "${TRAIN_OVERRIDES[@]}" 2>&1 | tee "$LOG_PATH"
 )

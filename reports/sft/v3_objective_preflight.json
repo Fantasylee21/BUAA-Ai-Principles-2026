@@ -1,0 +1,41 @@
+{
+  "Qwen2.5-VL-3B-Instruct": {
+    "checked_train_and_val": 2770,
+    "train_token_counts": {
+      "3": 44766,
+      "1": 2104,
+      "2": 2104
+    },
+    "ordinary_CE_token_shares": {
+      "3": 0.9140768571078531,
+      "1": 0.042961571446073425,
+      "2": 0.042961571446073425
+    }
+  },
+  "Qwen3-VL-4B-Instruct": {
+    "checked_train_and_val": 2770,
+    "train_token_counts": {
+      "3": 44766,
+      "1": 2104,
+      "2": 2104
+    },
+    "ordinary_CE_token_shares": {
+      "3": 0.9140768571078531,
+      "1": 0.042961571446073425,
+      "2": 0.042961571446073425
+    }
+  },
+  "Qwen2.5-Omni-3B": {
+    "checked_train_and_val": 4020,
+    "train_token_counts": {
+      "3": 68345,
+      "1": 3354,
+      "2": 3354
+    },
+    "ordinary_CE_token_shares": {
+      "3": 0.9106231596338588,
+      "1": 0.04468842018307063,
+      "2": 0.04468842018307063
+    }
+  }
+}

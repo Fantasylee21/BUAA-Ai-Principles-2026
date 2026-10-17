@@ -21,22 +21,110 @@ Score = 0.5 * Macro-F1
 - Qwen3-VL-4B-Instruct
 - Qwen2.5-Omni-3B
 
-## 当前 Baseline 结果
+## SFT 最终交付版本（v4 / sft-final）
 
-以下结果来自官方验证集全部 666 条样本，三个模型均使用记录为
-`native_default` 的原生输入配置，推理错误数均为 0。Baseline 与 SFT inference
-统一使用 `sft_prompt.py` 中的 system prompt、target instruction 和协议描述：
+本组当前选定的 SFT 交付方案是 `qlora_sft_v4_resample2x`，代码版本由
+`sft-final` 标签固定。首选交付模型为 Qwen2.5-Omni-3B；三个模型的配置均保留在
+`configs/sft/<model>/qlora_sft_v4_resample2x.yaml`。
 
-| 模型 | VA 输入 | Macro-F1 | Conflict accuracy | Aligned calibration | Score | 峰值保留显存 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen2.5-VL-3B | 仅视频画面 | 0.483716 | 0.000000 | **1.000000** | 0.441858 | 11.51 GiB |
-| Qwen3-VL-4B | 仅视频画面 | **0.509000** | **0.013514** | **1.000000** | **0.458554** | 14.48 GiB |
-| Qwen2.5-Omni-3B | 视频画面 + 音频 | 0.487326 | 0.000000 | **1.000000** | 0.443663 | 23.10 GiB |
+v4 沿用 v3 的字段平衡损失（emotion 0.5、uncertainty 0.4、其余回答 0.1，
+Conflict 不确定性权重 2），额外通过 LLaMAFactory 原生 `num_samples` 将 Conflict
+训练样本采样至原数量的 2 倍。不是新增人工标签，也不是从 v3 adapter 续训；默认从
+原始基座开始训练。训练样本数为 VL 2,482、Omni 3,795，官方验证集保持 666 条。
 
-VT 样本均输入视频画面和官方提供的文本。VA 样本中，两个 VL 模型不读取音频和
-文本，只输入视频画面；Qwen2.5-Omni 输入视频画面和内嵌音频，不提供官方文本。
-完整逐样本预测、运行配置和未四舍五入的指标保存在 `output/baseline/`；Baseline
-与 QLoRA SFT 的详细同口径对比见 `reports/sft/README.md`。
+项目成员提供的 Kaggle 提交截图中，Omni v4 的 Public Score 为 **0.90813**；
+这是公开榜记录，不是本地验证分数或最终隐藏榜成绩。训练执行者补充的
+[v4 实验分析](reports/sft/qlora_sft_v4.md) 记录：Omni、Qwen3-VL、Qwen2.5-VL
+的本地验证 Score 分别为 **0.7185、0.7110、0.6952**；只有 Qwen2.5-VL 高于
+各自的 v3 验证结果。选择 Omni v4 交付不代表其验证分数全面优于 v3。
+
+仓库已包含配置、采样实现和分析文档；Omni v4 adapter 已另行上传至下方团队模型仓库。
+v4 原始指标、日志及完整推理记录仍需训练执行者补充，以便独立复核。
+`sft-final` 保留原代码快照，本分析文档在标签之后补充到 `main`。
+
+使用顺序（在兼容的 Linux/CUDA 环境、仓库根目录执行）：
+
+1. 按下文准备基座、原始数据、依赖和单问题 SFT 数据。
+2. `python scripts/prepare_resampled_sft_data.py` 生成重采样数据注册文件。
+3. 使用对应 v4 YAML 启动训练；若已取得训练好的 adapter，则跳过训练，直接推理。
+4. 推理时显式设置 `ADAPTER_PATH` 为实际交付 checkpoint，不要沿用 v3 的目录。
+
+```bash
+# 新训练示例；已有权重时不需要执行。
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+
+# 已有权重：先验证，再对测试集生成 CSV。
+# 将 /absolute/path/to/v4-adapter 替换为真实路径；量化精度须与交付记录一致。
+ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omni_v4_val_nf4 \
+  bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omni_v4_test_nf4 \
+  bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+```
+
+### 下载 Omni v4 权重
+
+模型地址：**[BUAA-AI/qwen25omni-sft](https://huggingface.co/BUAA-AI/qwen25omni-sft)**。
+
+根据上传者确认，Omni v4 的 **LoRA adapter** 已上传，对应最佳 `checkpoint-714`；
+不是合并后的完整基座模型。交付文件的 `best_checkpoint.json` 记录验证 Score 为
+`0.7184609544`，根目录 adapter 与 `checkpoint-714` 的权重文件一致。
+
+- 仓库为 **Private**。先通过管理员提供的邀请链接加入
+  [BUAA-AI 团队](https://huggingface.co/BUAA-AI)，获得 `read` 或更高权限。
+- 使用自己的 Hugging Face 账号登录后，在模型仓库的 `Files and versions` 下载文件；
+  命令行下载需使用自己账号的访问令牌，不共享个人令牌。
+- 使用时仍须准备 **Qwen/Qwen2.5-Omni-3B** 基座，并按本项目 v4 配置加载 adapter。
+  配置中的 `Qwen2.5-Omni-3B/thinker` 是训练导出的子模型标识，不是独立可下载的
+  Hub 基座地址；应使用项目评估代码处理 thinker adapter，而非照搬普通文本模型示例。
+- 完整运行记录（基座版本、依赖、NF4/BF16 推理精度、准确加载命令）仍需与训练执行者
+  确认。首次使用先做小样本加载和推理检查；权重上传完成不等于已在新环境验证通过。
+
+Git 标签不包含权重。原始课程视频和标注不随模型上传。
+详见 [配置说明](configs/README.md) 和 [脚本说明](scripts/README.md)。
+
+## Baseline 与 SFT v3 / v4 验证结果
+
+以下均为完整官方验证集 **666 条**样本上的结果，不是 Kaggle 公开榜分数。
+Baseline 使用统一 prompt 的 BF16 推理记录；v3/v4 来自对应实验报告。
+这些结果用于展示项目进展，不构成完全控制环境与推理精度的消融实验。
+尤其 v4 的原始运行配置与指标文件尚待训练执行者补充，不能将差值全部归因于采样。
+
+| 模型 | 版本 | Macro-F1 | Conflict accuracy | Aligned calibration | 验证 Score |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen2.5-VL-3B | Baseline BF16 | 0.4837 | 0.0000 | 1.0000 | 0.4419 |
+| Qwen2.5-VL-3B | QLoRA v3 | 0.6057 | 0.6622 | 0.9324 | 0.6880 |
+| Qwen2.5-VL-3B | QLoRA v4 | 0.5977 | 0.6757 | 0.9679 | **0.6952** |
+| Qwen3-VL-4B | Baseline BF16 | 0.5090 | 0.0135 | 1.0000 | 0.4586 |
+| Qwen3-VL-4B | QLoRA v3 | 0.6185 | 0.7568 | 0.9189 | **0.7201** |
+| Qwen3-VL-4B | QLoRA v4 | 0.6186 | 0.7297 | 0.9139 | 0.7110 |
+| Qwen2.5-Omni-3B | Baseline BF16 | 0.4873 | 0.0000 | 1.0000 | 0.4437 |
+| Qwen2.5-Omni-3B | QLoRA v3 | 0.6340 | 0.7432 | 0.9443 | **0.7288** |
+| Qwen2.5-Omni-3B | QLoRA v4 | 0.6369 | 0.6892 | 0.9662 | 0.7185 |
+
+粗体标记各模型表内最高验证 Score。v4 相对 Baseline 的验证 Score 提升约为
+Qwen2.5-VL **+0.2533**、Qwen3-VL **+0.2524**、Omni **+0.2748**
+（按表中四舍五入值计算）。相对 v3，v4 仅在 Qwen2.5-VL 上提高验证综合分；
+Omni v3 仍是本表验证分最高的模型。
+
+评估输入保持项目协议：VT 使用视频与提供的文字；VA 对两个 VL 模型只提供视频
+画面，对 Omni 提供视频及音频而不提供文字。Baseline 使用 `native_default`，
+峰值保留显存分别为 11.51 / 14.48 / 23.10 GiB；这些显存值不代表 SFT 训练需求。
+Baseline 原始指标位于 `output/baseline/`；详细设置与来源见
+[实验汇总](reports/sft/README.md)、[v3 报告](reports/sft/qlora_sft_v3.md) 和
+[v4 报告](reports/sft/qlora_sft_v4.md)。
+
+### Kaggle 公开榜记录（与验证集分开）
+
+以下来自项目成员提供的提交截图，均为 Omni，不能与上表验证分直接比较。
+
+| 提交版本 | Public Score |
+| --- | ---: |
+| QLoRA v2，4-bit 推理 | 0.90644 |
+| QLoRA v3，checkpoint-630 | 0.90386 |
+| QLoRA v4，resample2x | **0.90813** |
+
+公开榜截图中 v4 最高，因此当前选定 v4 交付；这不是最终隐藏榜结果，
+也不意味着 v4 在本地验证上全面优于 v3。
 
 ## 项目结构
 
@@ -183,7 +271,6 @@ readlink -f models
 ```bash
 mkdir -p third_party
 git clone https://github.com/hiyouga/LlamaFactory.git third_party/LlamaFactory
-git -C third_party/LlamaFactory checkout 97b32d3133b501432141a82949d5c7bc4d94f23a
 ```
 
 如复用本地 checkout：
@@ -193,8 +280,7 @@ mkdir -p third_party
 ln -s /absolute/path/to/LlamaFactory third_party/LlamaFactory
 ```
 
-版本以 `third_party/llamafactory.lock.yaml` 为准。启动脚本会检查实际 HEAD 是否与
-锁文件一致，不一致时拒绝训练。`/third_party/LlamaFactory` 必须保留在
+本机启动器直接使用已安装的 LLaMAFactory，并通过真实训练检查兼容性。`/third_party/LlamaFactory` 必须保留在
 `.gitignore` 中；不要把外部项目源码提交进本仓库，也不要在一次已记录的实验中途
 更新其 commit。
 
@@ -548,3 +634,17 @@ bash scripts/run_baselines.sh 2
 
 更细的清洗统计和模态规则见 `data/README.md`，脚本参数见 `scripts/README.md`，
 LoRA 配置说明见 `configs/README.md`。
+
+
+## 本机 v3 实验
+
+最新本机训练使用 `configs/sft/<model>/qlora_sft_v3.yaml`，加入按字段归一化的
+任务损失，并在完整官方验证集上按比赛 Score 选择 epoch checkpoint。
+设计、已有结果对照、测试证据和日志路径见 [v3 报告](reports/sft/qlora_sft_v3.md)。
+
+```bash
+conda activate fwt_temp
+python scripts/run_sft_v3.py --gpu 4
+```
+
+三个模型均已完成训练与各轮验证，最佳均为第 3 轮。Omni、Qwen3-VL、Qwen2.5-VL 的最佳 Score 分别为 0.7288、0.7201、0.6880，完整结果见上述 v3 报告。

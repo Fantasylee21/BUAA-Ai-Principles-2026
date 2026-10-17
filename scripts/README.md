@@ -386,3 +386,29 @@ EXPORT_DEVICE=auto EXPORT_SIZE=4 MERGED_SUBDIR=merged_bf16 \
 After export, the script verifies `config.json` and model weight shards, then
 copies the source training YAML and generated export YAML into the merged model
 directory for reproducibility.
+
+
+## SFT v4 / sft-final
+
+The selected handoff configuration is `qlora_sft_v4_resample2x`. Prepare the
+original single-question datasets with `prepare_sft_data.py` first, then run:
+
+```bash
+python scripts/prepare_resampled_sft_data.py
+bash scripts/run_sft_training.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
+```
+
+This retains v3 task-balanced loss and doubles the Conflict sampling count.
+Training begins from the original base model, not the v3 adapter. Other model
+families have matching v4 YAML files. Validation is not resampled.
+
+`run_sft_v3.py --version v4_resample2x` also supports the v4 queue, but this
+helper hard-codes the local `fwt_temp` environment; adapt it to your server or
+use `run_sft_training.sh` with `CONDA_ENV` instead.
+
+Existing adapters do not require another training run. Follow the inference
+instructions above with the v4 YAML and an explicit `ADAPTER_PATH` pointing to
+the actual delivered checkpoint. Keep the recorded quantization mode and use
+separate run names for validation, test, checkpoints, and precision variants.
+The weight download link and submission checkpoint must be supplied by the
+training operator; neither is inferred from the `sft-final` code tag.
