@@ -38,8 +38,8 @@ Conflict 不确定性权重 2），额外通过 LLaMAFactory 原生 `num_samples
 的本地验证 Score 分别为 **0.7185、0.7110、0.6952**；只有 Qwen2.5-VL 高于
 各自的 v3 验证结果。选择 Omni v4 交付不代表其验证分数全面优于 v3。
 
-仓库已包含配置、采样实现和分析文档；v4 原始指标、日志、提交对应 adapter、
-准确 checkpoint 路径及完整推理记录仍需训练执行者交付，以便独立复核。
+仓库已包含配置、采样实现和分析文档；Omni v4 adapter 已另行上传至下方团队模型仓库。
+v4 原始指标、日志及完整推理记录仍需训练执行者补充，以便独立复核。
 `sft-final` 保留原代码快照，本分析文档在标签之后补充到 `main`。
 
 使用顺序（在兼容的 Linux/CUDA 环境、仓库根目录执行）：
@@ -61,10 +61,25 @@ SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omn
   bash scripts/run_sft_inference.sh qlora configs/sft/qwen25omni/qlora_sft_v4_resample2x.yaml 0
 ```
 
-权重通过团队私有 [Hugging Face 模型仓库](https://huggingface.co/BUAA-AI/qwen25omni-sft)
-另行交付；地址已创建，权重上传状态待确认。Git 标签不包含权重。
-交付时注明基座版本、checkpoint、代码版本、依赖、NF4/BF16 推理方式和加载命令。
-若只交付 adapter，使用者仍须下载原始基座。原始课程视频和标注不随模型上传。
+### 下载 Omni v4 权重
+
+模型地址：**[BUAA-AI/qwen25omni-sft](https://huggingface.co/BUAA-AI/qwen25omni-sft)**。
+
+根据上传者确认，Omni v4 的 **LoRA adapter** 已上传，对应最佳 `checkpoint-714`；
+不是合并后的完整基座模型。交付文件的 `best_checkpoint.json` 记录验证 Score 为
+`0.7184609544`，根目录 adapter 与 `checkpoint-714` 的权重文件一致。
+
+- 仓库为 **Private**。先通过管理员提供的邀请链接加入
+  [BUAA-AI 团队](https://huggingface.co/BUAA-AI)，获得 `read` 或更高权限。
+- 使用自己的 Hugging Face 账号登录后，在模型仓库的 `Files and versions` 下载文件；
+  命令行下载需使用自己账号的访问令牌，不共享个人令牌。
+- 使用时仍须准备 **Qwen/Qwen2.5-Omni-3B** 基座，并按本项目 v4 配置加载 adapter。
+  配置中的 `Qwen2.5-Omni-3B/thinker` 是训练导出的子模型标识，不是独立可下载的
+  Hub 基座地址；应使用项目评估代码处理 thinker adapter，而非照搬普通文本模型示例。
+- 完整运行记录（基座版本、依赖、NF4/BF16 推理精度、准确加载命令）仍需与训练执行者
+  确认。首次使用先做小样本加载和推理检查；权重上传完成不等于已在新环境验证通过。
+
+Git 标签不包含权重。原始课程视频和标注不随模型上传。
 详见 [配置说明](configs/README.md) 和 [脚本说明](scripts/README.md)。
 
 ## Baseline 与 SFT v3 / v4 验证结果
