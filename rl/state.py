@@ -33,7 +33,10 @@ def code_identity():
     # Source hashes also identify deployments made from a source snapshot without .git.
     sources = [*sorted((ROOT / "rl").glob("*.py")), ROOT / "sft_prompt.py"]
     return {"commit": commit, "dirty": dirty,
-            "source_hash": fingerprint({p.relative_to(ROOT).as_posix(): file_hash(p) for p in sources})}
+            # Universal-newline reading makes Windows/Linux source snapshots
+            # identical without relaxing checks on actual code changes.
+            "source_hash": fingerprint({p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+                                        for p in sources})}
 
 
 def capture_rng(torch):
