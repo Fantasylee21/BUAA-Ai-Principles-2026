@@ -21,6 +21,9 @@ Score = 0.5 * Macro-F1
 - Qwen3-VL-4B-Instruct
 - Qwen2.5-Omni-3B
 
+S2 RL 的奖励、固定实验配置、显卡切换、tmux 启动与断点恢复见
+[RL 实施说明](rl/README.md)。RL 从已交付的 Omni v4 adapter 继续训练。
+
 ## SFT 最终交付版本（v4 / sft-final）
 
 本组当前选定的 SFT 交付方案是 `qlora_sft_v4_resample2x`，代码版本由
@@ -65,9 +68,14 @@ SPLIT=test ADAPTER_PATH=/absolute/path/to/v4-adapter LOAD_IN_4BIT=1 RUN_NAME=omn
 
 模型地址：**[BUAA-AI/qwen25omni-sft](https://huggingface.co/BUAA-AI/qwen25omni-sft)**。
 
-根据上传者确认，Omni v4 的 **LoRA adapter** 已上传，对应最佳 `checkpoint-714`；
-不是合并后的完整基座模型。交付文件的 `best_checkpoint.json` 记录验证 Score 为
-`0.7184609544`，根目录 adapter 与 `checkpoint-714` 的权重文件一致。
+原始 **LoRA adapter** 固定在历史版本
+[`3aadc63707148c564bd27409a0ee80cf31988a47`](https://huggingface.co/BUAA-AI/qwen25omni-sft/tree/3aadc63707148c564bd27409a0ee80cf31988a47)，
+对应最佳 `checkpoint-714`。2026-10-21 核实：当前 `main` 的
+`6a1e7fab0339e8b130261d7384b47f1a476885a1` 已改为合并后的完整模型。
+继续 adapter RL 时应使用原始 adapter 加官方基座；不要把 adapter 再叠加到已合并模型。
+交付文件的 `best_checkpoint.json` 记录验证 Score 为 `0.7184609544`。
+本机 v4 包的根目录、`checkpoint-714` 和 HF 原始版本的 adapter 权重 SHA-256 一致，
+详见 [权重核验记录](reports/rl/v4_artifact_verification.md)。
 
 - 仓库为 **Private**。先通过管理员提供的邀请链接加入
   [BUAA-AI 团队](https://huggingface.co/BUAA-AI)，获得 `read` 或更高权限。

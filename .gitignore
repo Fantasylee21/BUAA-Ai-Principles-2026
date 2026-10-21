@@ -89,6 +89,8 @@ se
 
 # 本地保存的项目数据集、模型、输出和日志文件夹
 /Dataset
+/Dataset.zip
+/qlora_sft_v4_resample2x.7z
 /models
 /__pycache__
 
@@ -119,3 +121,9 @@ se
 # Project-local temporary files
 # ============================================================
 /tmp/
+
+# Local RL environments and newly generated experiment artifacts.
+.venv*/
+**/.pytest_cache/
+**/.ipynb_checkpoints/
+/rl/output/*

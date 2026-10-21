@@ -40,7 +40,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from metrics import parse_prediction  # noqa: E402  (stdlib-only parser)
-from reward import parse_completion  # noqa: E402  (used to recover the question)
+from reward import parse_completion, question_is_consistent  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -265,6 +265,18 @@ def main(argv=None):
             continue
 
         pred = extract_prediction(by_id[sid])
+        if args.strict:
+            strict_prediction = parse_completion(json.dumps(pred, ensure_ascii=False))
+            if strict_prediction is None or not question_is_consistent(strict_prediction):
+                record("output_contract_violation", sid,
+                       "raw prediction does not satisfy the exact model output contract")
+            else:
+                # CSV quoting can preserve a question string exactly; strict export
+                # must not quietly rewrite a valid model prediction.
+                out_rows.append([sid, strict_prediction["pred_emotion"],
+                                 strict_prediction["is_uncertain"],
+                                 strict_prediction["clarifying_question"]])
+                continue
 
         # -- field cleanup (whitespace / quotes / newlines) --
         cleaned = {}
@@ -274,6 +286,8 @@ def main(argv=None):
             cleaned[key] = value
             if raw_value is not None and value != str(raw_value):
                 counters["field_cleaned"] += 1
+                if args.strict:
+                    record("field_normalization", sid, f"{key} would require normalization")
 
         # -- pred_emotion --
         emotion = cleaned["pred_emotion"].lower()
