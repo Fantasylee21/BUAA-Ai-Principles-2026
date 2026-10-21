@@ -150,6 +150,30 @@ Compare candidates at common completed update counts. There is no promised
 eight-hour runtime: timings and peak allocated/reserved memory are measured
 per update. `--max-runtime-hours` is optional and saves at an update boundary.
 
+For a paired experiment on a second allocated GPU, leave the correctness run
+running and launch this controller in a separate tmux session, using the same
+Python environment and media tools as the first run:
+
+```bash
+python -u scripts/run_rl_f1_pipeline.py --data-root "$DATA_ROOT" \
+  --model-path "$BASE_MODEL" --sft-adapter-path "$SFT_ADAPTER" \
+  --gpu YOUR_ALLOCATED_GPU_UUID --pipeline-dir runs/omni-f1-pipeline-42
+```
+
+The controller automatically runs **train-only cache -> 10-step F1 smoke ->
+checkpoint reload check -> fresh 200-step F1 training**. Its `cache/`, `smoke/`
+and `train/` subdirectories remain separate; formal training never loads the
+smoke policy. Any nonzero exit, incomplete cache, stopped stage or missing
+completed checkpoint prevents the next stage. An existing pipeline directory
+is rejected rather than overwritten. Add `--dry-run` to inspect all commands
+without creating outputs or initializing CUDA. Pin one allocated GPU for this
+pipeline; the hardware assignment is a runtime choice, not an experiment setting.
+The controller leaves the existing `rl/*.py` training source unchanged.
+
+The tmux window streams output directly. `pipeline.log`, `pipeline-status.json`
+and `plan.json` in the pipeline directory record the complete sequence; each
+stage also keeps its own console, predictions, status and checkpoint files.
+
 ## Recovery, evaluation and submission
 
 Each checkpoint is written to a new partial directory and published only
