@@ -127,5 +127,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     while True:
         render_view = render_parameters if args.view == "parameters" else render
-        print("\033[2J\033[H"+render_view(args.run, args.gpus), flush=True)
+        print("\033[2J\033[H"+render_view(args.run, args.gpus), end="", flush=True)
         time.sleep(5)
