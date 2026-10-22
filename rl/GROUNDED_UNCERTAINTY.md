@@ -86,7 +86,11 @@ bash scripts/start_grounded_tmux.sh /absolute/new/run 1 2 buaa-grounded
 
 Use `tmux attach -t buaa-grounded` outside tmux, or
 `tmux switch-client -t buaa-grounded` inside an old session. Window 0 shows the
-dashboard, including the fixed settings and current learning rate; windows 1-7
+dashboard, prioritizing loss/reward/KL, current learning rate, training progress,
+best and latest valid local scores, baseline comparisons, conflict/false-positive
+counts, cache progress and GPU telemetry. Missing results stay explicitly pending;
+historical Kaggle Public and local validation scores are displayed separately.
+Completed/waiting stages retain their latest persisted training metrics. Windows 1-7
 show pipeline, training, validation, numerical checks, two cache shards, and
 learning checks. Window 8 displays the actual run parameters, sampling quotas,
 input budgets, and promotion/stopping gates. `Ctrl+B`, then `D` detaches safely.
