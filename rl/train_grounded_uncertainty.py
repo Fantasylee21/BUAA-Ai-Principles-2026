@@ -634,6 +634,7 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, choices=(42, 43), default=42)
     parser.add_argument("--shard", type=int, choices=(0, 1))
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--budget-start", type=float, help="Preserve an earlier start time when replacing a failed preflight release")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     args.run_dir = args.run_dir.resolve()
@@ -641,6 +642,8 @@ def parse_args(argv=None):
         parser.error("This experiment uses two distinct GPUs with 32 GiB allocator limits")
     if args.role == "cache" and args.shard is None:
         parser.error("cache requires --shard")
+    if args.budget_start is not None and not 0 < args.budget_start <= time.time():
+        parser.error("Budget start must be an actual timestamp in the past")
     if args.role == "run" and not args.resume and not all((args.model_path, args.sft_adapter_path, args.baseline_csv, args.legacy_run)):
         parser.error("A new run requires model, v4 adapter, baseline CSV and legacy cache run")
     return args
@@ -652,10 +655,10 @@ def main(argv=None):
         settings = settings_from(args.config)
         from .grounded_uncertainty import load_training, baseline_csv
         from .experiment import load_records
-        train = load_training(args.data_root / "train.jsonl")
+        training_rows = load_training(args.data_root / "train.jsonl")
         test, _ = load_records(args.data_root / "test_release.jsonl", require_labels=False)
         baseline_csv(args.baseline_csv, test)
-        print(json.dumps({"settings": settings, "training_samples": len(train), "test_samples": len(test),
+        print(json.dumps({"settings": settings, "training_samples": len(training_rows), "test_samples": len(test),
                           "baseline_sha256": file_hash(args.baseline_csv), "gpu_memory_gib_each": args.memory_gib}, indent=2))
         return
     os.environ.update(OMP_NUM_THREADS=str(args.cpu_threads), MKL_NUM_THREADS=str(args.cpu_threads),

@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from rl.grounded_uncertainty import (RobustSampler, baseline_csv, categorical_kl, eligible,
                                      load_training, main_prefix, pair_loss, settings_from)
@@ -114,6 +115,19 @@ class GroundedContracts(unittest.TestCase):
 
 
 HAS_STACK = all(importlib.util.find_spec(n) for n in ("torch", "peft", "transformers"))
+
+
+class GroundedEntryTests(unittest.TestCase):
+    def test_every_child_dispatches_without_loading_models_or_shadowing_train(self):
+        from rl import train_grounded_uncertainty as entry
+        for role, callback in (("probe", "numerical_probe"), ("cache", "cache_shard"),
+                               ("smoke", "smoke"), ("train", "train"), ("worker", "worker"), ("export", "export")):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(entry, "context_for", return_value={}), patch.object(entry, "emit"), \
+                    patch.object(entry, callback) as called, patch.dict(os.environ, {}, clear=False):
+                entry.main([role, "--run-dir", folder, *(["--shard", "0"] if role == "cache" else [])])
+                called.assert_called_once()
+                self.assertEqual(called.call_args.args[1], {})
 
 
 @unittest.skipUnless(HAS_STACK, "Real PEFT/torch stack required")

@@ -15,6 +15,9 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
 fi
 mkdir -p "$RUN/logs"
 ARGS=(run --run-dir "$RUN" --gpus "$GPU1" "$GPU2" --memory-gib 32)
+if [[ -n "${BUAA_GROUNDED_STARTED:-}" ]]; then
+  ARGS+=(--budget-start "$BUAA_GROUNDED_STARTED")
+fi
 if [[ -f "$RUN/context.json" ]]; then
   ARGS+=(--resume)
 else

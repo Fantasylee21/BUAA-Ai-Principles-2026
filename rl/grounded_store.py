@@ -22,7 +22,7 @@ def code_hash():
 
 
 def initialize(args):
-    started = time.time()
+    started = args.budget_start if args.budget_start is not None else time.time()
     run = args.run_dir
     if (run / "context.json").exists():
         if not args.resume:
