@@ -280,9 +280,11 @@ def evaluation_steps(n, every):
 
 
 def train(args, c):
-    from transformers import get_cosine_schedule_with_warmup
     run, settings = args.run_dir, c["identity"]["settings"]
     policy = make_policy(args, c, True)
+    # Some optional scheduler dependencies initialize CUDA during import.
+    # Bind the assigned physical GPU before importing that dependency stack.
+    from transformers import get_cosine_schedule_with_warmup
     torch = policy.torch
     cache = Cache(run, c, torch)
     parameters = [p for p in policy.model.parameters() if p.requires_grad]

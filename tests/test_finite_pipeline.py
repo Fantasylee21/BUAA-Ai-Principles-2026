@@ -1,5 +1,6 @@
 """Exercise bounded promotion flow and the real finite checkpoint format on CPU."""
 import copy
+import builtins
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -18,6 +19,37 @@ from rl.train_finite_actions import train
 
 
 class PipelineTests(unittest.TestCase):
+    def test_cache_repair_only_allows_the_known_import_move(self):
+        from scripts.repair_finite_cuda_startup import OLD, NEW, verify_import_only_change
+        before = {"rl/train_finite_actions.py": OLD + "    torch = policy.torch\n", "rl/finite_runtime.py":"unchanged"}
+        after = {**before, "rl/train_finite_actions.py":NEW + "    torch = policy.torch\n"}
+        verify_import_only_change(before, after)
+        with self.assertRaises(ValueError):
+            verify_import_only_change(before, {**after,"rl/finite_runtime.py":"different scoring"})
+        with self.assertRaises(ValueError):
+            verify_import_only_change(before, {**after,"rl/train_finite_actions.py":after["rl/train_finite_actions.py"]+"other change\n"})
+
+    def test_gpu_binding_precedes_scheduler_dependency_import(self):
+        # Emulate a scheduler dependency with an import-time CUDA side effect.
+        # The old order fails before make_policy can select the allocated GPU.
+        selected = False
+        import_original = builtins.__import__
+        class SchedulerImportReached(Exception):
+            pass
+        def select_first(*args, **kwargs):
+            nonlocal selected
+            selected = True
+            return SimpleNamespace()
+        def import_guard(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "transformers" and "get_cosine_schedule_with_warmup" in fromlist:
+                self.assertTrue(selected, "CUDA-sensitive scheduler imported before GPU selection")
+                raise SchedulerImportReached()
+            return import_original(name, globals, locals, fromlist, level)
+        with patch('rl.train_finite_actions.make_policy', side_effect=select_first), \
+             patch('builtins.__import__', side_effect=import_guard):
+            with self.assertRaises(SchedulerImportReached):
+                train(SimpleNamespace(run_dir=Path("unused")), {"identity":{"settings":dict(DEFAULTS)}})
+
     def test_gate_stops_or_refreshes_once_and_never_exceeds_two_epochs(self):
         for promote in (False, True):
             with self.subTest(promote=promote), tempfile.TemporaryDirectory() as tmp:

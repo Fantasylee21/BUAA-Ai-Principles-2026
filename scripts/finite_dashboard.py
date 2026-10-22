@@ -24,6 +24,8 @@ def render(run):
     if p:
         lines.append("Numerical checks: " + p.get("phase", "--"))
     t = read(run / "train.status.json")
+    if pipeline.get("phase") == "train_and_parallel_validation" and not t:
+        lines.append("GPU 1 trainer / GPU 2 validator: loading model and optimizer")
     if t:
         lines.extend(["", f"TRAIN | {t.get('phase','--')} | update {t.get('step',0)}/{t.get('maximum_steps',420)} | epoch {t.get('epoch','--')}",
                       "Loss: {} | E[reward]: {} | KL: {}".format(*[
