@@ -60,3 +60,57 @@ def prepare_omni_inputs(processor, row, data_root, settings, device="cuda:0"):
         raise RuntimeError("VT must not contain audio")
     return {k: v.to(device=device, dtype=torch.bfloat16) if torch.is_tensor(v) and v.is_floating_point()
             else v.to(device=device) if torch.is_tensor(v) else v for k, v in inputs.items()}
+
+
+def task_messages(row, video_path, mode):
+    """Auxiliary prompts contain input evidence only, never annotation metadata."""
+    if mode == "full":
+        return messages_for(row, video_path)
+    if mode not in ("vision", "text", "audio") or (mode == "text" and row["protocol"] != "VT") or (mode == "audio" and row["protocol"] != "VA"):
+        raise ValueError("Unsupported isolated modality for this protocol")
+    content = []
+    if mode == "vision":
+        content.append({"type": "video", "video": str(video_path)})
+        instruction = "Judge only the emotion visible in this silent video. No audio or transcript is provided."
+    elif mode == "audio":
+        content.append({"type": "audio", "audio": str(video_path)})
+        instruction = "Judge only the emotion conveyed by this audio. No video or transcript is provided."
+    else:
+        import json
+        instruction = "Judge only the emotion conveyed by this text: " + json.dumps(row["text_content"], ensure_ascii=False)
+    content.append({"type": "text", "text": instruction +
+        ' Return exactly one compact JSON object with pred_emotion equal to positive, negative, or neutral.'})
+    return [{"role": "system", "content": [{"type": "text", "text": "You are an emotion recognition assistant."}]},
+            {"role": "user", "content": content}]
+
+
+def prepare_task_inputs(processor, row, data_root, settings, mode, device="cuda:0"):
+    if mode == "full":
+        return prepare_omni_inputs(processor, row, data_root, settings, device)
+    import torch
+    root = Path(data_root).resolve()
+    path = (root / row["video"]).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("Missing or escaped task media")
+    messages = task_messages(row, path, mode)
+    rendered = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    kwargs = {"text": rendered, "padding": True, "return_tensors": "pt"}
+    if mode == "vision":
+        pixels = settings["video_pixels"]
+        kwargs.update(videos=str(path), videos_kwargs={"use_audio_in_video": False,
+            "do_sample_frames": True, "fps": settings["video_fps"],
+            "min_frames": settings["video_min_frames"], "max_frames": settings["video_max_frames"],
+            "size": {"shortest_edge": pixels, "longest_edge": pixels}})
+    elif mode == "audio":
+        kwargs.update(audio=audio_from_video(path, settings["audio_sampling_rate"]),
+                      audio_kwargs={"sampling_rate": settings["audio_sampling_rate"]})
+    inputs = {k: v for k, v in processor(**kwargs).items() if v is not None}
+    inputs["use_audio_in_video"] = False
+    has_video = "pixel_values_videos" in inputs
+    has_audio = "input_features" in inputs
+    if has_video != (mode == "vision") or has_audio != (mode == "audio"):
+        raise RuntimeError("Isolated modality input contains the wrong media")
+    if inputs["input_ids"].shape[1] > settings["max_prompt_tokens"]:
+        raise ValueError("Task input exceeds the untruncated token budget")
+    return {k: v.to(device=device, dtype=torch.bfloat16) if torch.is_tensor(v) and v.is_floating_point()
+            else v.to(device=device) if torch.is_tensor(v) else v for k, v in inputs.items()}
