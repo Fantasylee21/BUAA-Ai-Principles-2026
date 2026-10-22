@@ -86,8 +86,10 @@ bash scripts/start_grounded_tmux.sh /absolute/new/run 1 2 buaa-grounded
 
 Use `tmux attach -t buaa-grounded` outside tmux, or
 `tmux switch-client -t buaa-grounded` inside an old session. Window 0 shows the
-dashboard; windows 1-7 show pipeline, training, validation, numerical checks,
-two cache shards, and learning checks. `Ctrl+B`, then `D` detaches safely.
+dashboard, including the fixed settings and current learning rate; windows 1-7
+show pipeline, training, validation, numerical checks, two cache shards, and
+learning checks. Window 8 displays the actual run parameters, sampling quotas,
+input budgets, and promotion/stopping gates. `Ctrl+B`, then `D` detaches safely.
 Completion or a rejected gate leaves its reason and logs visible.
 
 Restart the same command with the **same source release and run directory**

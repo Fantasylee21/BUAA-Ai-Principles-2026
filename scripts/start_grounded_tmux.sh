@@ -26,7 +26,8 @@ else
     --baseline-csv "$ROOT/inputs/baseline_090813.csv"
     --legacy-run "$ROOT/runs/finite-v1-20261022-r3")
 fi
-printf -v DASH '%q ' "$PYTHON" -u "$SOURCE/scripts/grounded_dashboard.py" "$RUN"
+printf -v DASH '%q ' "$PYTHON" -u "$SOURCE/scripts/grounded_dashboard.py" "$RUN" --gpus "$GPU1" "$GPU2"
+printf -v PARAMETERS '%q ' "$PYTHON" -u "$SOURCE/scripts/grounded_dashboard.py" "$RUN" --view parameters --gpus "$GPU1" "$GPU2"
 printf -v COMMAND '%q ' "$PYTHON" -u -m rl.train_grounded_uncertainty "${ARGS[@]}"
 printf -v LOG '%q' "$RUN/logs/pipeline.log"
 tmux new-session -d -s "$SESSION" -n dashboard -c "$SOURCE" \
@@ -39,6 +40,7 @@ for ITEM in '2 training train' '3 validation worker' '4 preflight probe' '5 cach
   printf -v TAIL '%q ' tail -n 25 -F "$RUN/logs/$FILE.log"
   tmux new-window -t "$SESSION:$INDEX" -n "$NAME" -c "$SOURCE" "$TAIL"
 done
+tmux new-window -t "$SESSION:8" -n parameters -c "$SOURCE" "$PARAMETERS"
 tmux select-window -t "$SESSION:0"
 echo "Started $SESSION. Outside tmux: tmux attach -t $SESSION"
 echo "Already inside tmux: tmux switch-client -t $SESSION"
