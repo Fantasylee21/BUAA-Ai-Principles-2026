@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import json
+import math
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from rl.conflict_cost import VERSION, settings_from
-from rl.conflict_runtime import ConflictPolicy, conflict_messages
+from rl.conflict_runtime import ConflictPolicy, conflict_messages, generated_question
 from rl.conflict_store import (TaskCache, load_checkpoint, merge_tasks, save_checkpoint,
                                save_task, task_key, validate_checkpoint, verify_source)
+from rl.conflict_store import decision_cache_contract, import_partial_cache
 from rl.experiment import file_hash, fingerprint, write_json
 from rl.grounded_recovery import EXECUTION
 from rl.grounded_uncertainty import main_prefix
@@ -26,6 +31,106 @@ def paired_rows():
 
 
 class ConflictStoreTests(unittest.TestCase):
+    def test_concurrent_json_writers_have_independent_atomic_temp_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"status.json"
+            barrier = threading.Barrier(2)
+            seen, guard = set(), threading.Lock()
+            replace = Path.replace
+            def synchronized_replace(temporary, target):
+                if target == path:
+                    with guard:
+                        first = threading.get_ident() not in seen
+                        seen.add(threading.get_ident())
+                    if first:
+                        barrier.wait(timeout=5)
+                return replace(temporary, target)
+            values = [{"worker": 0}, {"worker": 1}]
+            with patch.object(Path, "replace", synchronized_replace):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [executor.submit(write_json, path, value) for value in values]
+                    for future in futures:
+                        future.result(timeout=10)
+            self.assertIn(json.loads(path.read_text()), values)
+            self.assertEqual(list(Path(directory).glob("*.tmp*")), [])
+
+    def test_generated_question_preserves_literal_quotes_without_changing_fields(self):
+        tail = ' "你对这句话"给我五百块"的理解是什么？"}'
+        question, method = generated_question(tail)
+        self.assertEqual(question, '你对这句话"给我五百块"的理解是什么？')
+        self.assertEqual(method, "literal_quotes_serialized")
+        self.assertEqual(generated_question('Could you clarify your feelings?"}', opened_quote=True)[0],
+                         'Could you clarify your feelings?')
+        for bad in ('"none"}', '""}', '"unfinished', '[]}',
+                    '"Question?","is_uncertain":"no"}'):
+            self.assertIsNone(generated_question(bad))
+
+    def test_answer_serializes_only_frozen_model_question_value(self):
+        import torch
+        policy = object.__new__(ConflictPolicy)
+        policy.torch = torch
+        policy.value_scores = lambda *args, **kwargs: torch.tensor([1., 0.])
+        policy.extend = lambda prefix, suffix: (prefix, suffix)
+        policy.cached_perception = lambda features: contextlib.nullcontext()
+        calls = []
+        def generate(prefix, **kwargs):
+            calls.append((prefix, kwargs))
+            return None, ' "你说的"五百块"是什么意思？"}'
+        policy.generate = generate
+        baseline = {"pred_emotion": "positive", "is_uncertain": "no", "clarifying_question": "none"}
+        answer, _ = policy.answer_frozen_emotion({}, {}, baseline, question_prefix="original")
+        parsed = json.loads(answer)
+        self.assertEqual(parsed, {"pred_emotion": "positive", "is_uncertain": "yes",
+            "clarifying_question": '你说的"五百块"是什么意思？'})
+        self.assertEqual(calls[0][1]["adapter"], "reference")
+        self.assertEqual(calls[0][0][0], "original")
+        self.assertEqual(policy.last_question_diagnostic["method"], "literal_quotes_serialized")
+
+    def test_partial_cache_reuse_checks_provenance_membership_probabilities_and_bytes(self):
+        from rl.conflict_store import ROOT
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, original, run = root/"source", root/"original", root/"new"
+            for path in (source, original, run):
+                (path/"cache").mkdir(parents=True)
+            write_json(source/"context.json", {"source": "immutable"})
+            rows = {"train": [{"sample_id": "train"}], "val": [{"sample_id": "val"}]}
+            baseline = {"pred_emotion": "positive", "is_uncertain": "no", "clarifying_question": "none"}
+            original_entries = {}
+            for shard, split in enumerate(("train", "val")):
+                sid = rows[split][0]["sample_id"]
+                key = task_key(sid, "full")
+                blob = source/"cache"/(key+".pt")
+                blob.write_bytes(b"verified tensor bytes "+sid.encode())
+                entry = {"sample_id": sid, "mode": "full", "split": split,
+                    "file": blob.name, "sha256": file_hash(blob), "identity_hash": "old",
+                    "baseline": baseline, "reference_scores": [-1., 1.]}
+                if split == "val":
+                    entry.update(zero_completion=json.dumps(baseline),
+                        zero_probabilities=[1/(1+math.exp(2)), 1/(1+math.exp(-2))])
+                (source/f"cache/shard-{shard}.journal.jsonl").write_text(json.dumps(entry)+"\n", encoding="utf-8")
+                original_entries[key] = {"baseline": baseline}
+            write_json(original/"cache/complete.json", {"entries": original_entries})
+            parent = {"run": str(source), "identity_hash": "old",
+                "context_sha256": file_hash(source/"context.json"), "decision_contract": decision_cache_contract(ROOT),
+                "journals": {str(i): file_hash(source/f"cache/shard-{i}.journal.jsonl") for i in (0, 1)}}
+            c = {**rows, "source_run": str(original), "identity_hash": "new",
+                "identity": {"partial_cache_parent": parent}}
+            self.assertEqual(import_partial_cache(run, c)["verified_rows"], 2)
+            self.assertEqual(import_partial_cache(run, c)["verified_rows"], 2)
+            imported = json.loads((run/"cache/shard-0.journal.jsonl").read_text())
+            self.assertEqual(imported["identity_hash"], "new")
+            self.assertEqual(imported["producer_identity"], "old")
+            journal = source/"cache/shard-1.journal.jsonl"
+            bad = json.loads(journal.read_text())
+            bad["zero_probabilities"] = [.5, .5]
+            journal.write_text(json.dumps(bad)+"\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "journal changed"):
+                import_partial_cache(run, c)
+            parent["journals"]["1"] = file_hash(journal)
+            with self.assertRaisesRegex(ValueError, "probabilities"):
+                import_partial_cache(run, c)
+
     def test_prompt_uses_only_available_evidence_and_conflict_semantics(self):
         for protocol in ("VT", "VA"):
             row = {"protocol": protocol, "text_content": "visible transcript sentinel",

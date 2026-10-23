@@ -8,6 +8,17 @@ from scripts.conflict_dashboard import render, render_parameters, valid_candidat
 
 
 class ConflictDashboardTests(unittest.TestCase):
+    def test_unlimited_context_shows_no_countdown_or_time_cutoff(self):
+        self.write("context.json", {"started": 100, "deadline": None, "training_cutoff": None,
+            "settings": {"steps": 420, "budget_hours": None, "training_cutoff_hours": None}})
+        with patch("scripts.conflict_dashboard.time.time", return_value=10**12):
+            text = render(self.run)
+            parameters = render_parameters(self.run)
+        self.assertIn("时间限制: 无", text)
+        self.assertNotIn("剩余预算", text)
+        self.assertNotIn("24h截止", text)
+        self.assertIn("时间限制：无", parameters)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

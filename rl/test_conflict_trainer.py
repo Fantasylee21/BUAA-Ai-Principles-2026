@@ -176,6 +176,15 @@ class ActualUpdateTests(unittest.TestCase):
 
 
 class SamplingAndStageTests(unittest.TestCase):
+    def test_unlimited_runtime_has_no_wall_clock_stop(self):
+        c = {"deadline": None, "training_cutoff": None}
+        with patch.object(entry.time, "time", return_value=10**12):
+            self.assertEqual(entry.remaining(c), float("inf"))
+            self.assertFalse(entry.past_training_cutoff(c))
+            entry.check_budget(c)
+        self.assertIsNone(settings_from()["budget_hours"])
+        self.assertIsNone(settings_from()["training_cutoff_hours"])
+
     def test_smoke_resume_10_replays_check_and_resume_40_only_finishes_diagnostics(self):
         for completed_step in (10, 40):
             with self.subTest(completed_step=completed_step), tempfile.TemporaryDirectory() as directory:

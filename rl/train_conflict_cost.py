@@ -18,7 +18,8 @@ from .experiment import ROOT, file_hash, fingerprint, write_json
 from .conflict_cost import (VERSION, VALUES, EpochSampler, main_loss, pair_loss,
                             categorical_kl, choose_baseline, eligible, settings_from)
 from .conflict_store import (TaskCache, context_for, initialize, load_checkpoint,
-                             merge_tasks, read, save_checkpoint, save_task, task_key)
+                             merge_tasks, read, save_checkpoint, save_task, task_key,
+                             import_partial_cache)
 from .grounded_uncertainty import baseline_csv, read_rows
 from .finite_reports import report, comparison
 from .metrics import prediction_record
@@ -28,12 +29,17 @@ from .train_finite_actions import append, emit
 
 
 def remaining(c):
-    return c["deadline"] - time.time()
+    return float("inf") if c.get("deadline") is None else c["deadline"] - time.time()
 
 
 def check_budget(c):
     if remaining(c) <= 0:
-        raise TimeoutError("The approved 24-hour wall-clock budget has ended")
+        raise TimeoutError("The configured wall-clock deadline has ended")
+
+
+def past_training_cutoff(c):
+    cutoff = c.get("training_cutoff")
+    return cutoff is not None and time.time() >= cutoff
 
 
 def make_policy(args, c, training):
@@ -137,6 +143,19 @@ def numerical_probe(args, c):
     measured = pair_backward(policy, items, c["settings"])
     gradient = close_gradient(torch, gradient_vector(policy), direct_gradient, "cross_protocol_pair")
     checks.append({"pair_id": pair["pair_id"], "gradient": gradient, **measured})
+    # Replay the exact original failure, rather than only testing mocked quotes.
+    failed_sid = "ch_sims_v2:VA:video_0024:0070"
+    row = next(r for r in c["val"] if r["sample_id"] == failed_sid)
+    original, features = source.load(row, "val")
+    prefix = policy.prepare_conflict(row, c["data_root"])
+    answer, probabilities = policy.answer_frozen_emotion(prefix, features,
+        source.entry(row, "full")["baseline"], adapter="reference", question_prefix=original)
+    parsed = parse_completion(answer)
+    if parsed is None or not question_is_consistent(parsed) or parsed["pred_emotion"] != source.entry(row, "full")["baseline"]["pred_emotion"]:
+        raise RuntimeError("Original question-serialization failure was not repaired")
+    write_json(args.run_dir / "question-repair-check.json", {"passed": True,
+        "sample_id": failed_sid, "answer": parsed, "probabilities": probabilities,
+        "generation": policy.last_question_diagnostic})
     if adapter_digest(policy, "reference") != reference:
         raise RuntimeError("Numerical checks changed the frozen reference")
     write_json(args.run_dir / "probe.json", {"passed": True, "checks": checks, "reference_digest": reference})
@@ -179,9 +198,11 @@ def cache_shard(args, c):
                     adapter="reference", question_prefix=original)
                 parsed = parse_completion(answer)
                 if parsed is None or not question_is_consistent(parsed) or parsed["pred_emotion"] != baseline["pred_emotion"]:
-                    raise RuntimeError("New zero-update baseline is not a legal frozen-emotion output")
+                    raise RuntimeError(f"Illegal new zero-update output for {row['sample_id']}: {answer!r}")
                 entry["zero_completion"] = answer
                 entry["zero_probabilities"] = probabilities
+                if policy.last_question_diagnostic:
+                    entry["question_generation"] = policy.last_question_diagnostic
             append(journal, entry)
             del original, raw, packed, prefix, features, scores
         entries.append(entry)
@@ -512,9 +533,9 @@ def train(args, c):
     evaluation_steps = {105, 210, 315, 420} if args.seed == 42 else {limit}
     while step < limit:
         check_budget(c)
-        # The 20-hour cutoff prevents NEW epochs, not finishing an epoch already
-        # underway. The independent 24-hour deadline remains a strict upper bound.
-        if (step == 0 or (args.seed == 42 and step == sampler.epoch_updates)) and time.time() >= c["training_cutoff"]:
+        # New runs have no wall-clock cutoff. Retain explicit finite-deadline
+        # handling for historical contexts without silently changing their clocks.
+        if (step == 0 or (args.seed == 42 and step == sampler.epoch_updates)) and past_training_cutoff(c):
             reason = "training_time_cutoff"
             break
         if args.seed == 42 and step == sampler.epoch_updates:
@@ -732,6 +753,11 @@ def controller(args):
         if any(p.returncode for p in processes):
             raise RuntimeError("Experiment worker exited unsuccessfully")
     try:
+        if c.get("identity", {}).get("partial_cache_parent") and not (run / "cache/reuse-complete.json").exists():
+            emit(run, "pipeline", phase="importing_partial_cache")
+            def imported(completed):
+                emit(run, "cache-import", phase="verified_partial_cache", completed=completed)
+            import_partial_cache(run, c, imported)
         if not (run / "probe.json").exists():
             emit(run, "pipeline", phase="numerical_probe")
             wait([launch("probe", args.gpus[0])])
@@ -745,7 +771,7 @@ def controller(args):
         emit(run, "pipeline", phase="zero_baselines")
         zero_baselines(run, c)
         if not (run / "smoke.json").exists():
-            if not (run / "checkpoints/smoke/step-000010/complete.json").exists() and time.time() >= c["training_cutoff"]:
+            if not (run / "checkpoints/smoke/step-000010/complete.json").exists() and past_training_cutoff(c):
                 emit(run, "pipeline", phase="stopped", reason="training_time_cutoff", submission=False)
                 return
             emit(run, "pipeline", phase="40_step_learning_and_resume_check")
@@ -769,7 +795,7 @@ def controller(args):
                     return
             if (not (run / f"train-{seed}.done.json").exists()
                     and not (run / f"latest-{seed}.json").exists()
-                    and time.time() >= c["training_cutoff"]):
+                    and past_training_cutoff(c)):
                 emit(run, "pipeline", phase="stopped", reason="training_time_cutoff", submission=False)
                 return
             emit(run, "pipeline", phase="training_and_validation", seed=seed, maximum_steps=limit)
@@ -819,6 +845,8 @@ def parse_args(argv=None):
     parser.add_argument("--baseline-csv", type=Path)
     parser.add_argument("--source-run", type=Path)
     parser.add_argument("--source-release", type=Path)
+    parser.add_argument("--reuse-run", type=Path)
+    parser.add_argument("--reuse-release", type=Path)
     parser.add_argument("--config", type=Path, default=ROOT / "configs/rl/conflict_cost_v1.json")
     parser.add_argument("--gpu", default="auto")
     parser.add_argument("--gpus", nargs=2, default=["1", "2"])
@@ -841,6 +869,8 @@ def parse_args(argv=None):
         parser.error("Target updates must be between 1 and 420")
     if args.budget_start is not None and not 0 < args.budget_start <= time.time():
         parser.error("Budget start must be a real earlier timestamp")
+    if bool(args.reuse_run) != bool(args.reuse_release):
+        parser.error("Partial-cache reuse requires its run and immutable release")
     if args.role == "run" and not args.resume and not all((args.model_path, args.sft_adapter_path, args.baseline_csv, args.source_run, args.source_release)):
         parser.error("A new run requires original model/adapter, baseline CSV, source run and immutable source release")
     return args
@@ -870,12 +900,14 @@ def main(argv=None):
                 controller(args)
         else:
             c = context_for(args.run_dir)
-            emit(args.run_dir, args.role, phase="loading_model", seed=args.seed)
+            role = f"cache-{args.shard}" if args.role == "cache" else args.role
+            emit(args.run_dir, role, phase="loading_model", seed=args.seed)
             {"probe": numerical_probe, "cache": cache_shard, "smoke": smoke, "train": train,
              "worker": worker, "export": export, "diagnostics": diagnostics}[args.role](args, c)
     except BaseException as error:
-        write_json(args.run_dir / f"{args.role}.error.json", {"error": str(error), "traceback": traceback.format_exc(), "time": time.time()})
-        emit(args.run_dir, "pipeline" if args.role == "run" else args.role, phase="failed", error=str(error))
+        role = f"cache-{args.shard}" if args.role == "cache" else args.role
+        write_json(args.run_dir / f"{role}.error.json", {"error": str(error), "traceback": traceback.format_exc(), "time": time.time()})
+        emit(args.run_dir, "pipeline" if args.role == "run" else role, phase="failed", error=str(error))
         raise
 
 

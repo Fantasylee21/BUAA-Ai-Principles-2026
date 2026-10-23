@@ -87,7 +87,8 @@ def render(run, gpus=("1", "2")):
     active, seed, learning, limit = active_metrics(run, context, pipeline)
     now = time.time()
     elapsed = number(max(0, now-context["started"])/3600, ".2f") if "started" in context else "--"
-    remaining = number(max(0, context["deadline"]-now)/3600, ".2f") if "deadline" in context else "--"
+    unlimited = context.get("deadline") is None
+    remaining = "不限时" if unlimited else number(max(0, context["deadline"]-now)/3600, ".2f")
     baseline = read(run / "results/baseline.json").get("metrics", {})
     free = read(run / "results/baseline-free.json").get("metrics", {})
     new = read(run / "results/baseline-new.json").get("metrics", {})
@@ -145,7 +146,7 @@ def render(run, gpus=("1", "2")):
     source = "临时可学习性检查" if learning else f"正式训练 seed {seed}"
     lines = [
         "Omni v4 | 冲突直接纠错总览 | "+datetime.now(timezone(timedelta(hours=8))).strftime("北京时间 %Y-%m-%d %H:%M:%S"),
-        f"阶段: {phase} | 已用 {elapsed} h | 剩余预算 {remaining} h",
+        f"阶段: {phase} | 已用 {elapsed} h | " + ("时间限制: 无" if unlimited else f"剩余预算 {remaining} h"),
         f"{source}: 参数更新 {active.get('step', 0)}/{limit} | {active.get('phase', '准备中')} | epoch {active.get('epoch', '--')}",
         "",
         f"LOSS: {number(active.get('loss'))} | 主任务 CE: {number(active.get('main_loss'))} | 配对损失: {number(active.get('pair_loss'))}",
@@ -170,7 +171,7 @@ def render(run, gpus=("1", "2")):
         "状态: "+status_text,
         "",
         "Ctrl+B 后按 0 总览 | 2 训练日志 | 3 验证 | 8 参数；也可鼠标点击底部窗口名",
-        "每5秒刷新；本地分与Public分别显示。Ctrl+B 后按 D 安全离开；20h后不启新训练，24h截止。",
+        "每5秒刷新；本地分与Public分别显示。Ctrl+B 后按 D 安全离开；无时间限制，按步数/效果停止。",
     ]
     columns = max(40, shutil.get_terminal_size((140, 30)).columns-1)
     return "\n".join(fit_line(line, columns) for line in lines)
@@ -207,7 +208,9 @@ def render_parameters(run, gpus=("1", "2")):
         "",
         f"GPU {gpus[0]}/{gpus[1]}并行准备缓存，随后{gpus[0]}训练/{gpus[1]}验证；各32GiB PyTorch分配上限",
         f"输入：{settings.get('video_fps', '--')} fps | 最多{settings.get('video_max_frames', '--')}帧 | {settings.get('video_pixels', '--')}像素/帧 | prompt最多{settings.get('max_prompt_tokens', '--')} tokens",
-        f"总预算 {settings.get('budget_hours', 24):g}h；{settings.get('training_cutoff_hours', 20):g}h后不启新训练；剩余 {number(max(0, context.get('deadline', time.time())-time.time())/3600, '.2f')}h",
+        ("时间限制：无；不设置24小时停止或20小时阶段截止；按既定步数和效果门槛运行"
+         if context.get("deadline") is None else
+         f"历史运行时间截止：剩余 {number(max(0, context['deadline']-time.time())/3600, '.2f')}h"),
         "",
         "Ctrl+B 后按0总览，2训练日志，8参数；Ctrl+B 后按D安全离开",
     ])

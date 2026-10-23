@@ -23,7 +23,7 @@ DEFAULTS = {
     "steps": 420, "epochs": 2, "batch_size": 16,
     "learning_rate": 5e-6, "warmup_steps": 10, "max_grad_norm": 1.,
     "beta": .02, "pair_weight": .1, "pair_margin": 1.,
-    "smoke_steps": 40, "budget_hours": 24., "training_cutoff_hours": 20.,
+    "smoke_steps": 40, "budget_hours": None, "training_cutoff_hours": None,
     "video_fps": 2., "video_min_frames": 4, "video_max_frames": 64,
     "video_pixels": 50176, "audio_sampling_rate": 16000,
     "max_prompt_tokens": 6144, "max_completion_length": 128,

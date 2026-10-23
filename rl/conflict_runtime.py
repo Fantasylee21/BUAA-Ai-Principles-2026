@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from .finite_actions import omni_settings
 from .finite_runtime import FinitePolicy
@@ -25,6 +26,32 @@ INSTRUCTION = (
     "single string. For no, clarifying_question must be none. For yes, ask one "
     "neutral clarifying question addressed to the current user. Do not add Markdown."
 )
+
+
+def generated_question(tail, *, opened_quote=False):
+    """Read only the generated question value; the serializer owns JSON syntax.
+
+    Models sometimes put literal quotation marks inside a natural-language
+    question. Those marks are content, not permission to change decision fields.
+    Preserve that content and let json.dumps escape it exactly once.
+    """
+    fragment = ('"' + tail if opened_quote else tail).strip()
+    if fragment.endswith("}"):
+        fragment = fragment[:-1].rstrip()
+    method = "json_string"
+    try:
+        question = json.loads(fragment)
+    except (ValueError, TypeError):
+        if not (fragment.startswith('"') and fragment.endswith('"')):
+            return None
+        # An attempted extra output field is not part of a question value.
+        if re.search(r'"\s*,\s*"(?:pred_emotion|is_uncertain|clarifying_question)"\s*:', fragment):
+            return None
+        question = fragment[1:-1]
+        method = "literal_quotes_serialized"
+    if not isinstance(question, str) or not question.strip() or question.strip().lower() == "none":
+        return None
+    return question, method
 
 
 def conflict_messages(row, video_path):
@@ -163,6 +190,7 @@ class ConflictPolicy(FinitePolicy):
         return output.logits[0, -1, self.value_ids[mode]].float()
 
     def answer_frozen_emotion(self, prefix, features, baseline, *, adapter="policy", question_prefix=None):
+        self.last_question_diagnostic = None
         with self.torch.no_grad():
             scores = self.value_scores(prefix, features, "full", baseline["pred_emotion"], adapter=adapter)
         uncertain = VALUES["full"][int(scores.argmax())]
@@ -174,12 +202,19 @@ class ConflictPolicy(FinitePolicy):
             if question_prefix is None:
                 raise ValueError("New yes decisions require the frozen v4 original question prompt")
             selected = main_prefix(baseline["pred_emotion"])+uncertain+'","clarifying_question":'
-            extended = self.extend(question_prefix, selected)
-            with self.cached_perception(features):
-                _, tail = self.generate(extended, adapter="reference")
-            parsed = parse_completion(selected+tail)
-            if parsed is None or not question_is_consistent(parsed) or parsed["pred_emotion"] != baseline["pred_emotion"] or parsed["is_uncertain"] != uncertain:
-                return selected+tail, scores.detach().double().softmax(-1).tolist()
-            question = parsed["clarifying_question"]
+            attempts = []
+            for opening in ("", '"'):
+                extended = self.extend(question_prefix, selected+opening)
+                with self.cached_perception(features):
+                    _, tail = self.generate(extended, adapter="reference")
+                extracted = generated_question(tail, opened_quote=bool(opening))
+                attempts.append({"opening_quote": bool(opening), "generated_tail": tail})
+                if extracted is not None:
+                    question, method = extracted
+                    self.last_question_diagnostic = {"method": method, "attempts": attempts,
+                        "question": question, "adapter": "reference"}
+                    break
+            else:
+                raise RuntimeError("Frozen v4 did not generate a nonempty question value: " + json.dumps(attempts, ensure_ascii=False))
         answer = {"pred_emotion": baseline["pred_emotion"], "is_uncertain": uncertain, "clarifying_question": question}
         return json.dumps(answer, ensure_ascii=False, separators=(",", ":")), scores.detach().double().softmax(-1).tolist()

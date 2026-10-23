@@ -59,9 +59,10 @@ Score deltas use the higher baseline. The dashboard's corrected/lost-conflict
 and added/removed-false-positive counts are explicitly relative to original
 free generation; result files also retain the new-prompt comparison.
 
-The budget is 24 wall-clock hours from the recorded start. No new training phase
-starts after hour 20. Insufficient time saves results and stops without relaxing
-acceptance. Two shared GPUs each have a 32 GiB **PyTorch allocator** ceiling,
+Wall-clock limits have been removed at the user's request. Both `budget_hours`
+and `training_cutoff_hours` are null; no 24-hour shutdown or 20-hour phase cutoff
+applies. The update ceilings, learning checks and score gates still stop the
+experiment. Two shared GPUs each have a 32 GiB **PyTorch allocator** ceiling,
 which is not a hardware reservation or total CUDA-process-memory guarantee.
 Only this controller's own child processes are managed.
 
@@ -73,8 +74,8 @@ model. Its 734 ordered IDs and emotion values must equal the original confirmed
 `2446fcec5e105651157cd376d9a80ac5792489c41d8c2f2b70d710a93c4bdf23`).
 `no` uses question `none`; frozen v4 supplies required new `yes` questions.
 There is no automatic Kaggle submission.
-When a qualified submission is ready and more than one budget hour remains,
-the selected model also gets a training-only single-modality diagnostic report.
+When a qualified submission is ready, the selected model also gets a
+training-only single-modality diagnostic report.
 This adds no optimizer updates or selection criteria.
 
 From the immutable server release:
@@ -89,7 +90,20 @@ Default root is `/home/nas/xingzhenbang/buaa-ai2026`, overridable with
 `BUAA_CONFLICT_SOURCE_RELEASE`. Those artifacts supply provenance/compatible
 inputs, not formal policy or optimizer initialization. The same source release
 and run directory can resume after its prior controller exits; duplicate tmux
-sessions are refused. Resume retains the original deadline.
+sessions are refused. Elapsed runtime remains visible without a deadline.
+
+For a repaired release, `BUAA_CONFLICT_REUSE_RUN` and
+`BUAA_CONFLICT_REUSE_RELEASE` may identify a failed cost-training cache producer.
+The importer verifies its source, model, media, settings, actual prompt/scoring
+code, per-row membership, probabilities and every blob checksum. Only completed
+journal rows are hard-linked into the new run. It preserves old failure records
+and never imports old optimizer or temporary training weights.
+
+New clarification questions still come from frozen v4 on the original prompt.
+Only the question value is extracted; the serializer controls the final JSON
+and escapes literal quotation marks. A deterministic opening-quote retry handles
+malformed value boundaries. Missing questions still fail explicitly; no fixed
+question is fabricated and decision fields cannot be rewritten by generation.
 
 Outside tmux use `tmux attach -t buaa-conflict`; inside an older session use
 `tmux switch-client -t buaa-conflict`. Window 0 shows loss, main/pair losses, KL,

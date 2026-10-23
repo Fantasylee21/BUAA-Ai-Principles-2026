@@ -4,7 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
+import time
+import uuid
 from pathlib import Path
 
 from .reward import REWARD_VERSIONS, VALID_EMOTIONS
@@ -178,6 +181,19 @@ def group_advantages(rewards):
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        for attempt in range(8):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                # Windows may briefly lock a destination during another atomic
+                # replacement. POSIX writers do not need this sharing retry.
+                if os.name != "nt" or attempt == 7:
+                    raise
+                time.sleep(.01*(attempt+1))
+    finally:
+        if temporary.exists():
+            temporary.unlink()

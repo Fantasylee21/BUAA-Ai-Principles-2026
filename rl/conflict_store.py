@@ -1,7 +1,10 @@
 """Immutable cost-sensitive experiments, full-input caches and policy-only state."""
 from __future__ import annotations
 
+import ast
+import json
 import math
+import os
 from pathlib import Path
 import shutil
 import time
@@ -30,6 +33,129 @@ def code_hash():
 
 def perception_contract(root):
     return {name: fingerprint((Path(root) / name).read_text(encoding="utf-8")) for name in PERCEPTION_MODULES}
+
+
+def decision_cache_contract(root):
+    """Hash exactly the prompt/native-score path, excluding question rendering."""
+    tree = ast.parse((Path(root) / "rl/conflict_runtime.py").read_text(encoding="utf-8"))
+    names = {"SYSTEM_PROMPT", "INSTRUCTION", "conflict_messages", "prepare_conflict_inputs"}
+    methods = {"__init__", "prepare_conflict", "original_task", "prepare_task",
+               "validate_perception_reuse", "extend", "value_scores"}
+    nodes = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in node.targets):
+            nodes.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name in names:
+            nodes.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name == "ConflictPolicy":
+            nodes.extend(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name in methods)
+    if len(nodes) != len(names)+len(methods):
+        raise ValueError("Incomplete decision-cache source contract")
+    return fingerprint({"perception": perception_contract(root),
+        "decision": [ast.dump(n, include_attributes=False) for n in nodes]})
+
+
+def verify_partial_cache(source_run, source_release, identity):
+    source, release = Path(source_run).resolve(), Path(source_release).resolve()
+    old = read(source / "context.json")
+    if (old["identity_hash"] != fingerprint(old["identity"])
+            or old["identity"].get("algorithm") != VERSION
+            or source_hash_at(release) != old["identity"]["source"]):
+        raise ValueError("Partial-cache source identity or release changed")
+    for key in ("software", "execution", "base", "sft", "media", "split_hashes", "raw_split_hashes", "baseline_csv_sha256"):
+        if old["identity"].get(key) != identity[key]:
+            raise ValueError(f"Partial-cache source differs: {key}")
+    ignore = {"budget_hours", "training_cutoff_hours"}
+    if ({k: v for k, v in old["settings"].items() if k not in ignore}
+            != {k: v for k, v in identity["settings"].items() if k not in ignore}):
+        raise ValueError("Partial-cache scoring settings changed")
+    contract = decision_cache_contract(ROOT)
+    if decision_cache_contract(release) != contract:
+        raise ValueError("Partial-cache prompt or native scoring path changed")
+    if old["identity"]["cache_parent"]["identity_hash"] != identity["cache_parent"]["identity_hash"]:
+        raise ValueError("Partial-cache original v4 provenance differs")
+    journals = {str(i): file_hash(source / f"cache/shard-{i}.journal.jsonl") for i in (0, 1)}
+    return {"run": str(source), "release": str(release), "identity_hash": old["identity_hash"],
+        "context_sha256": file_hash(source / "context.json"), "journals": journals,
+        "decision_contract": contract}
+
+
+def check_partial_parent(parent):
+    source = Path(parent["run"])
+    if file_hash(source / "context.json") != parent["context_sha256"] or decision_cache_contract(ROOT) != parent["decision_contract"]:
+        raise ValueError("Partial-cache source context or scoring contract changed")
+    for shard, digest in parent["journals"].items():
+        if file_hash(source / f"cache/shard-{shard}.journal.jsonl") != digest:
+            raise ValueError("Partial-cache source journal changed")
+
+
+def import_partial_cache(run, c, progress=None):
+    """Reuse completed rows only; verify every blob and all cached decisions."""
+    from .reward import parse_completion, question_is_consistent
+    parent = c["identity"]["partial_cache_parent"]
+    check_partial_parent(parent)
+    run, source = Path(run), Path(parent["run"])
+    original = read(Path(c["source_run"]) / "cache/complete.json")["entries"]
+    ordered = [(split, row) for split in ("train", "val") for row in c[split]]
+    count, rewritten = 0, []
+    for shard in (0, 1):
+        expected = {task_key(row["sample_id"], "full"): (split, row) for split, row in ordered[shard::2]}
+        entries, seen = [], set()
+        for line in (source / f"cache/shard-{shard}.journal.jsonl").read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            key = task_key(entry["sample_id"], "full")
+            if (key in seen or key not in expected or entry.get("mode") != "full"
+                    or entry.get("identity_hash") != parent["identity_hash"] or entry.get("file") != key+".pt"):
+                raise ValueError("Partial-cache membership, identity, or filename changed")
+            seen.add(key)
+            split, row = expected[key]
+            if entry["split"] != split or entry["baseline"] != original[key]["baseline"]:
+                raise ValueError("Partial-cache split or frozen emotion baseline changed")
+            scores = entry["reference_scores"]
+            if len(scores) != 2 or not all(math.isfinite(v) for v in scores):
+                raise ValueError("Partial-cache reference scores are invalid")
+            if split == "val":
+                parsed = parse_completion(entry.get("zero_completion"))
+                decision = "yes" if scores[0] >= scores[1] else "no"
+                if (parsed is None or not question_is_consistent(parsed)
+                        or parsed["pred_emotion"] != entry["baseline"]["pred_emotion"] or parsed["is_uncertain"] != decision):
+                    raise ValueError("Partial-cache zero-update completion is invalid")
+                probabilities = entry.get("zero_probabilities", [])
+                normalizer = sum(math.exp(v-max(scores)) for v in scores)
+                wanted = [math.exp(v-max(scores))/normalizer for v in scores]
+                if len(probabilities) != 2 or any(not math.isfinite(v) for v in probabilities) or any(abs(a-b) > 1e-10 for a, b in zip(probabilities, wanted)):
+                    raise ValueError("Partial-cache probabilities differ from its reference scores")
+            original_blob = source / "cache" / entry["file"]
+            if file_hash(original_blob) != entry["sha256"]:
+                raise ValueError("Partial-cache blob checksum failed")
+            dest = run / "cache" / entry["file"]
+            if dest.exists():
+                if file_hash(dest) != entry["sha256"]:
+                    raise ValueError("Partial-cache destination conflicts with verified source")
+            else:
+                os.link(original_blob, dest)
+            entries.append({**entry, "identity_hash": c["identity_hash"], "producer_identity": parent["identity_hash"]})
+            count += 1
+            if progress and count % 100 == 0:
+                progress(count)
+        rewritten.append(entries)
+    for shard, entries in enumerate(rewritten):
+        journal = run / f"cache/shard-{shard}.journal.jsonl"
+        if journal.exists():
+            existing = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if existing != entries:
+                raise ValueError("Refusing to overwrite a new cache journal with source rows")
+        else:
+            temp = journal.with_suffix(".partial")
+            temp.write_text("".join(json.dumps(e, ensure_ascii=False)+"\n" for e in entries), encoding="utf-8")
+            temp.replace(journal)
+    value = {"verified_rows": count, "method": "hardlink", "parent": parent}
+    write_json(run / "cache/reuse-complete.json", value)
+    if progress:
+        progress(count)
+    return value
 
 
 def verify_source(source_run, source_release, identity):
@@ -100,6 +226,8 @@ def initialize(args):
             (("train", "train.jsonl"), ("val", "val.jsonl"), ("test", "test_release.jsonl"))},
         "baseline_csv_sha256": file_hash(args.baseline_csv)}
     identity["cache_parent"] = verify_source(args.source_run, args.source_release, identity)
+    if getattr(args, "reuse_run", None):
+        identity["partial_cache_parent"] = verify_partial_cache(args.reuse_run, args.reuse_release, identity)
     dest = run / "baseline_090813.csv"
     shutil.copyfile(args.baseline_csv, dest)
     dest.chmod(0o444)
@@ -109,8 +237,8 @@ def initialize(args):
         "data_root": str(data_root), "source_run": str(Path(args.source_run).resolve()),
         "source_release": str(Path(args.source_release).resolve()), "train": train, "val": val, "test": test,
         "baseline_test": baseline, "started": started,
-        "deadline": started+settings["budget_hours"]*3600,
-        "training_cutoff": started+settings["training_cutoff_hours"]*3600}
+        "deadline": None if settings["budget_hours"] is None else started+settings["budget_hours"]*3600,
+        "training_cutoff": None if settings["training_cutoff_hours"] is None else started+settings["training_cutoff_hours"]*3600}
     for name in ("cache", "requests", "results", "checkpoints", "logs"):
         (run / name).mkdir(exist_ok=True)
     write_json(run / "context.json", c)
@@ -139,6 +267,8 @@ def context_for(run):
             or file_hash(source / "cache/complete.json") != parent["manifest_sha256"]
             or perception_contract(ROOT) != parent["perception_contract"]):
         raise ValueError("Source cache provenance changed")
+    if identity.get("partial_cache_parent"):
+        check_partial_parent(identity["partial_cache_parent"])
     return c
 
 

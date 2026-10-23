@@ -12,6 +12,6 @@
   "pair_weight": 0.1,
   "pair_margin": 1.0,
   "smoke_steps": 40,
-  "budget_hours": 24.0,
-  "training_cutoff_hours": 20.0
+  "budget_hours": null,
+  "training_cutoff_hours": null
 }
