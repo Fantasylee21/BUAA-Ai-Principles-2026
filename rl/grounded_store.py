@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import time
@@ -9,6 +10,7 @@ import uuid
 
 from .experiment import ROOT, artifact_hash, check_disjoint, file_hash, fingerprint, load_records, write_json
 from .grounded_uncertainty import VERSION, baseline_csv, load_training, settings_from
+from .grounded_recovery import EXECUTION
 from .state import adapter_digest, capture_rng, restore_rng, software_versions
 
 
@@ -17,8 +19,42 @@ def read(path):
 
 
 def code_hash():
-    paths = [*sorted((ROOT / "rl").glob("*.py")), ROOT / "sft_prompt.py"]
-    return fingerprint({p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in paths})
+    return source_hash_at(ROOT)
+
+
+def source_hash_at(root):
+    root = Path(root)
+    paths = [*sorted((root / "rl").glob("*.py")), root / "sft_prompt.py"]
+    return fingerprint({p.relative_to(root).as_posix(): p.read_text(encoding="utf-8") for p in paths})
+
+
+CACHE_MODULES = ("rl/omni_io.py", "rl/omni_runtime.py", "rl/finite_runtime.py", "rl/finite_actions.py",
+                 "rl/grounded_runtime.py", "rl/grounded_uncertainty.py", "sft_prompt.py")
+
+
+def cache_contract(root):
+    return {name: fingerprint((Path(root) / name).read_text(encoding="utf-8")) for name in CACHE_MODULES}
+
+
+def reuse_identity(args, identity):
+    if not args.reuse_run:
+        return None
+    source = args.reuse_run.resolve()
+    release = args.reuse_release.resolve()
+    old = read(source / "context.json")
+    manifest_path = source / "cache/complete.json"
+    manifest = read(manifest_path)
+    if old["identity_hash"] != fingerprint(old["identity"]) or manifest["identity_hash"] != old["identity_hash"]:
+        raise ValueError("Reuse source experiment identity is corrupt")
+    if source_hash_at(release) != old["identity"]["source"] or cache_contract(release) != cache_contract(ROOT):
+        raise ValueError("Reuse source code or media/value-scoring contract changed")
+    keys = ("algorithm", "settings", "software", "base", "sft", "media", "split_hashes",
+            "raw_split_hashes", "baseline_csv_sha256")
+    if any(old["identity"][key] != identity[key] for key in keys):
+        raise ValueError("Cached data/model/precision/templates differ from this experiment")
+    return {"run": str(source), "release": str(release), "identity_hash": old["identity_hash"],
+            "context_sha256": file_hash(source / "context.json"), "manifest_sha256": file_hash(manifest_path),
+            "cache_contract": cache_contract(ROOT)}
 
 
 def initialize(args):
@@ -63,12 +99,16 @@ def initialize(args):
         if old["identity"]["media"].get(row["video"]) != media[row["video"]]:
             raise ValueError("Legacy media changed")
     identity = {"algorithm": VERSION, "settings": settings, "source": code_hash(), "software": software_versions(),
+                "execution": EXECUTION,
                 "base": base, "sft": adapter, "media": media,
                 "split_hashes": {"train": fingerprint(train), "val": fingerprint(val), "test": fingerprint(test)},
                 "raw_split_hashes": {name: file_hash(args.data_root / filename) for name, filename in
                     (("train", "train.jsonl"), ("val", "val.jsonl"), ("test", "test_release.jsonl"))},
                 "baseline_csv_sha256": file_hash(args.baseline_csv), "legacy_identity": old["identity_hash"],
                 "legacy_manifest_sha256": file_hash(args.legacy_run / "cache/complete.json")}
+    parent = reuse_identity(args, identity)
+    if parent:
+        identity["cache_parent"] = parent
     dest = run / "baseline_090813.csv"
     shutil.copyfile(args.baseline_csv, dest)
     dest.chmod(0o444)
@@ -84,13 +124,53 @@ def initialize(args):
     return c
 
 
+def import_verified_cache(run, c, progress=None):
+    """Hard-link immutable tensors after full producer/contract/checksum checks."""
+    run = Path(run)
+    parent = c["identity"]["cache_parent"]
+    source = Path(parent["run"])
+    if file_hash(source / "context.json") != parent["context_sha256"] or file_hash(source / "cache/complete.json") != parent["manifest_sha256"]:
+        raise ValueError("Reuse source metadata changed")
+    if cache_contract(ROOT) != parent["cache_contract"]:
+        raise ValueError("Current cache contract changed")
+    old = read(source / "cache/complete.json")
+    expected = {task_key(row["sample_id"], mode): (split, row["sample_id"], mode)
+                for split in ("train", "val") for row in c[split]
+                for mode in (["full", *row["view_targets"]] if split == "train" else ["full"])}
+    if set(old["entries"]) != set(expected) or old["identity_hash"] != parent["identity_hash"]:
+        raise ValueError("Reuse cache membership is incomplete")
+    for key, entry in old["entries"].items():
+        if (entry["split"], entry["sample_id"], entry["mode"]) != expected[key] or entry["file"] != key+".pt" or entry["identity_hash"] != parent["identity_hash"]:
+            raise ValueError("Reuse cache crossed a sample/mode/split boundary")
+    entries = {}
+    for index, (key, entry) in enumerate(sorted(old["entries"].items()), 1):
+        original = source / "cache" / entry["file"]
+        if not original.resolve().is_relative_to((source / "cache").resolve()) or file_hash(original) != entry["sha256"]:
+            raise ValueError("Reuse tensor checksum failed")
+        destination = run / "cache" / entry["file"]
+        if destination.exists():
+            if file_hash(destination) != entry["sha256"]:
+                raise ValueError("Conflicting imported tensor; refusing to overwrite")
+        else:
+            os.link(original, destination)
+        entries[key] = {**entry, "identity_hash": c["identity_hash"], "producer_identity": parent["identity_hash"]}
+        if progress and (index % 100 == 0 or index == len(expected)):
+            progress(index, len(expected))
+    manifest = {"schema": VERSION, "identity_hash": c["identity_hash"], "entries": entries,
+                "imported_from": parent}
+    write_json(run / "cache/complete.json", manifest)
+    write_json(run / "cache/import.json", {"verified_tasks": len(entries), "method": "hardlink",
+                                           "parent": parent, "reference_recheck_required": True})
+    return manifest
+
+
 def context_for(run):
     run = Path(run)
     c = read(run / "context.json")
     identity = c["identity"]
     if identity["algorithm"] != VERSION or c["identity_hash"] != fingerprint(identity) or identity["source"] != code_hash():
         raise ValueError("Grounded algorithm/source/identity mismatch")
-    if identity["software"] != software_versions() or settings_from() != c["settings"]:
+    if identity["software"] != software_versions() or settings_from() != c["settings"] or identity.get("execution") != EXECUTION:
         raise ValueError("Runtime or approved settings changed")
     if file_hash(run / "baseline_090813.csv") != identity["baseline_csv_sha256"]:
         raise ValueError("Frozen public baseline changed")

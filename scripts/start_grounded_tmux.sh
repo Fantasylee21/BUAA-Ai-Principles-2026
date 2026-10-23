@@ -15,6 +15,9 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
 fi
 mkdir -p "$RUN/logs"
 ARGS=(run --run-dir "$RUN" --gpus "$GPU1" "$GPU2" --memory-gib 32)
+if [[ -n "${BUAA_GROUNDED_REUSE_RUN:-}" ]]; then
+  ARGS+=(--reuse-run "$BUAA_GROUNDED_REUSE_RUN" --reuse-release "${BUAA_GROUNDED_REUSE_RELEASE:?Set the original immutable source release}")
+fi
 if [[ -n "${BUAA_GROUNDED_STARTED:-}" ]]; then
   ARGS+=(--budget-start "$BUAA_GROUNDED_STARTED")
 fi
@@ -33,6 +36,7 @@ printf -v LOG '%q' "$RUN/logs/pipeline.log"
 tmux new-session -d -s "$SESSION" -n dashboard -c "$SOURCE" \
   -e "PATH=$PATH" -e "HF_HUB_OFFLINE=1" -e "TMPDIR=$TMPDIR" "$DASH"
 tmux set-option -t "$SESSION" remain-on-exit on
+tmux set-option -t "$SESSION" mouse on
 tmux new-window -t "$SESSION:1" -n pipeline -c "$SOURCE" "set -o pipefail; $COMMAND 2>&1 | tee -a $LOG"
 tmux set-option -w -t "$SESSION:1" remain-on-exit on
 for ITEM in '2 training train' '3 validation worker' '4 preflight probe' '5 cache0 cache-0' '6 cache1 cache-1' '7 learning-check smoke'; do

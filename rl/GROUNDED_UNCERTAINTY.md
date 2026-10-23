@@ -51,10 +51,19 @@ Legacy optimizer states cannot load into this algorithm.
 2. Verify raw/cached values and gradients on real VT and VA samples in all
    applicable input modes. Use verified legacy **features**, never old scores.
 3. Build disjoint cache shards on two GPUs, then validate every checksum.
+   A repaired run can instead import a completed cache after checking the original
+   source identity, unchanged media/value-scoring code, models, data, settings,
+   software, and every tensor checksum. Hard links avoid recomputing or copying
+   features. The new run records the producer identity and checks all 666 frozen
+   reference decisions under the repaired runtime before training.
 4. Require all 666 zero-update uncertainty decisions to equal free generation.
 5. Run a disposable 20-update check on 32 training examples: hard-C and hard-A
    median correct log-odds gains each >=0.25, main regression loss drop >=10%,
    frozen reference, and exact next-update recovery. Discard its weights.
+   CUDA uses deterministic algorithms, cuBLAS workspace `:4096:8`, deterministic
+   cuDNN, no cuDNN benchmarking and no TF32. Recovery checks keep exact equality;
+   `recovery-check.json` records parameter/gradient/optimizer/task/loss differences
+   for both paths, and `smoke-updates.jsonl` retains the per-task short-run trace.
 6. Train seed 42 from original v4, at most 200 updates. At step 80 and later,
    stop if no evaluated candidate has gain >=0.003, natural >=8/25, FP <=28.
 7. Primary gate: gain >=0.015, natural >=10/25, VA >=4/10, FP <=28/592,
@@ -104,3 +113,10 @@ checkpoints are immutable and readers require their completion marker.
 The startup assumes the original data/models, offline environment, legacy run
 `runs/finite-v1-20261022-r3`, and baseline CSV under `inputs/baseline_090813.csv`
 are already present below `BUAA_RL_ROOT` (default server project root).
+
+To reuse a compatible completed grounded cache on a newly authorized attempt,
+set `BUAA_GROUNDED_REUSE_RUN` and `BUAA_GROUNDED_REUSE_RELEASE` to its absolute run
+and source-release directories before starting. The new attempt keeps separate
+checkpoints, optimizer state and a bounded clock. It starts policy training from
+original v4. Old smoke weights and old optimizer state are used only for isolated
+recovery diagnosis, never as the formal training initialization.

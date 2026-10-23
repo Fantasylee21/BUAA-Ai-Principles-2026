@@ -108,7 +108,7 @@ def render_parameters(run, gpus=("1", "2")):
         f"Training seed {train.get('seed', settings['seed'])} | update {train.get('step', 0)}/{settings['steps']} | current LR {current_lr}",
         "",
         *configuration_lines(settings),
-        f"Weight decay 0 | gradient clip {settings['max_grad_norm']:g} | dropout 0 | no parameter sweeps",
+        f"Weight decay 0 | gradient clip {settings['max_grad_norm']:g} | dropout 0 | deterministic CUDA",
         "Loss = 0.6 mean(Conflict) + 0.4 mean(Aligned) + 0.1 mean(views) + 0.02 KL_U",
         "Reward: correct=1 / wrong=0; regress change in action log-odds against frozen old",
         "Main action yes/no | auxiliary positive/negative/neutral | native value-token logits",
@@ -139,11 +139,12 @@ def render(run, gpus=("1", "2")):
     phase = pipeline.get("phase", "initializing")
     settings = context.get("settings", {})
     train = read(run / "train.status.json")
-    smoke = read(run / "smoke.status.json")
+    smoke = {**last_metrics(run / "smoke-updates.jsonl"), **read(run / "smoke.status.json")}
     seed = pipeline.get("seed", train.get("seed", settings.get("seed", 42)))
     persisted = last_metrics(run / f"train-{seed}.jsonl")
     training = {**persisted, **{k: v for k, v in train.items() if k != "seed" or v == seed}} if train.get("seed", seed) == seed else persisted
-    learning = phase == "20_step_learning_and_resume_check" and "loss" in smoke
+    learning = "loss" in smoke and (phase == "20_step_learning_and_resume_check" or
+        (phase == "failed" and (run / "smoke.error.json").exists() and not persisted))
     active = smoke if learning else training
     source = "临时可学习性检查" if learning else f"正式训练 seed {seed}"
     step, limit = active.get("step", 0), (20 if learning else settings.get("steps", 200))
@@ -181,6 +182,9 @@ def render(run, gpus=("1", "2")):
     worker = read(run / "worker.status.json")
     shards = [read(run / f"cache-{i}.status.json") for i in (0, 1)]
     cache_progress = " | ".join(f"GPU {gpu}: {s.get('completed', 0)}/{s.get('total', 2010)}" for gpu, s in zip(gpus, shards))
+    imported = read(run / "cache-import.status.json")
+    if phase == "importing_verified_cache":
+        cache_progress = f"校验并复用 {imported.get('completed', 0)}/{imported.get('total', 10728)} 个任务"
     completed = sum(s.get("completed", 0) for s in shards)
     total = sum(s.get("total", 2010) for s in shards)
     cache_eta = "--"
@@ -199,6 +203,8 @@ def render(run, gpus=("1", "2")):
         status_text = "流程已结束，等待分析 | "+pipeline.get("reason", phase)
     elif phase == "training_and_validation":
         status_text = "训练、验证与难例刷新按固定流程执行"
+    elif phase == "importing_verified_cache":
+        status_text = "正在逐文件校验并复用现有缓存"
     learning_check = f"进行中 {smoke.get('step', 0)}/20" if phase == "20_step_learning_and_resume_check" and not smoke_result else check_label(smoke_result)
     validation_progress = f"{worker.get('phase', '等待训练 checkpoint')} {worker.get('completed', '--')}/{worker.get('total', '--')}"
     active_lr = number(active.get("learning_rate"), ".3g")

@@ -15,7 +15,7 @@ import traceback
 
 from .experiment import ROOT, file_hash, fingerprint, write_json
 from .grounded_store import (TaskCache, context_for, initialize, load_checkpoint, merge_tasks, read,
-                             save_checkpoint, save_task, task_key)
+                             save_checkpoint, save_task, task_key, import_verified_cache)
 from .grounded_uncertainty import (VERSION, VALUES, RobustSampler, eligible, main_prefix, read_rows,
                                   pair_loss, settings_from)
 from .metrics import prediction_record
@@ -36,6 +36,8 @@ def check_budget(c):
 
 def make_policy(args, c, training):
     # Bind CUDA before importing model/scheduler dependencies.
+    from .grounded_recovery import prepare_environment, configure_torch, EXECUTION
+    prepare_environment()
     from .omni_runtime import select_gpu
     device = select_gpu(args.gpu, min_free_memory_gib=args.memory_gib+2)
     import torch
@@ -47,10 +49,10 @@ def make_policy(args, c, training):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cuda.matmul.allow_tf32 = False
+    configure_torch(torch)
     from .grounded_runtime import GroundedPolicy
     print(json.dumps({"gpu": device, "allocator_limit_gib": args.memory_gib,
-                      "training": training, "seed": seed}), flush=True)
+                      "training": training, "seed": seed, "execution": EXECUTION}), flush=True)
     return GroundedPolicy(c["model"], c["adapter"], c["settings"], training=training)
 
 
@@ -61,6 +63,7 @@ def numerical_probe(args, c):
     torch = policy.torch
     reference = adapter_digest(policy, "reference")
     policy.snapshot_old()
+    imported = TaskCache(args.run_dir, c, torch) if c["identity"].get("cache_parent") else None
     checks = []
     for protocol in ("VT", "VA"):
         row = next(r for r in c["train"] if r["protocol"] == protocol)
@@ -68,8 +71,11 @@ def numerical_probe(args, c):
         for mode in ("full", "vision", "text" if protocol == "VT" else "audio"):
             check_budget(c)
             raw = policy.prepare_task(row, c["data_root"], mode)
-            features = policy.perception(raw)
-            cached, features = unpack_cache(torch, pack_cache(torch, raw, features))
+            if imported:
+                cached, features = imported.load(row, "train", mode)
+            else:
+                features = policy.perception(raw)
+                cached, features = unpack_cache(torch, pack_cache(torch, raw, features))
             if mode == "full":
                 with policy.cached_perception(features):
                     _, completion = policy.generate(cached, adapter="reference")
@@ -104,6 +110,23 @@ def numerical_probe(args, c):
             torch.cuda.empty_cache()
     if adapter_digest(policy, "reference") != reference:
         raise RuntimeError("Numerical probe changed the reference")
+    if imported:
+        maximum = 0.
+        for index, row in enumerate(c["val"], 1):
+            check_budget(c)
+            prefix, features = imported.load(row, "val")
+            entry = imported.entry(row, "full")
+            with torch.no_grad():
+                actual = policy.value_scores(prefix, features, "full", entry["baseline"]["pred_emotion"], adapter="reference")
+            expected = torch.as_tensor(entry["reference_scores"], device=actual.device)
+            maximum = max(maximum, float((actual-expected).abs().max()))
+            if not torch.allclose(actual, expected, atol=.01, rtol=1e-4) or VALUES["full"][int(actual.argmax())] != entry["baseline"]["is_uncertain"]:
+                raise RuntimeError(f"Reused reference changed for validation input {row['sample_id']}")
+            del prefix, features, actual, expected
+            if index % 20 == 0 or index == len(c["val"]):
+                emit(args.run_dir, "probe", phase="rechecking_666_reused_references", completed=index, total=len(c["val"]))
+        write_json(args.run_dir / "reuse-check.json", {"passed": True, "records": len(c["val"]),
+            "decision_mismatches": 0, "maximum_score_difference": maximum})
     write_json(args.run_dir / "probe.json", {"passed": True, "checks": checks, "reference_digest": reference})
     emit(args.run_dir, "probe", phase="passed", completed=6, total=6)
 
@@ -274,6 +297,7 @@ def measure_smoke(policy, cache, selected):
 
 
 def smoke(args, c):
+    from .grounded_recovery import snapshot, compare_snapshots, task_differences
     policy = make_policy(args, c, True)
     cache = TaskCache(args.run_dir, c, policy.torch)
     optimizer, scheduler, parameters = optimizer_for(policy, c)
@@ -292,17 +316,36 @@ def smoke(args, c):
         random.Random(42+step).shuffle(indices)
         slots = [{"row": selected[i]["row"], "draw_id": f"smoke:{step}:{j}", "selection": selected[i]["cohort"]}
                  for j, i in enumerate(indices)]
+        if step == 11:
+            before_original = snapshot(policy, optimizer, scheduler)
         value = update(policy, cache, slots, old_cache, optimizer, scheduler, parameters, c)
+        append(args.run_dir / "smoke-updates.jsonl", {"step": step, **value})
         if step == 10:
             checkpoint = save_checkpoint(args.run_dir, policy, optimizer, scheduler, c, seed=42, step=10,
                                          old_block=0, pool={"smoke_ids": [v["row"]["sample_id"] for v in selected]}, smoke=True)
         if step == 11:
             expected = adapter_digest(policy, "policy")
+            after_original = snapshot(policy, optimizer, scheduler, gradients=True)
             load_checkpoint(policy, checkpoint, c, optimizer=optimizer, scheduler=scheduler)
+            before_restored = snapshot(policy, optimizer, scheduler)
             repeated = update(policy, cache, slots, old_cache, optimizer, scheduler, parameters, c)
-            resume_check = expected == adapter_digest(policy, "policy") and repeated["loss"] == value["loss"]
+            after_restored = snapshot(policy, optimizer, scheduler, gradients=True)
+            diagnosis = {"before": compare_snapshots(policy.torch, before_original, before_restored),
+                "after": compare_snapshots(policy.torch, after_original, after_restored),
+                "tasks": task_differences(value["samples"], repeated["samples"]),
+                "original_loss": value["loss"], "restored_loss": repeated["loss"],
+                "loss_difference": repeated["loss"]-value["loss"],
+                "original_policy_digest": expected, "restored_policy_digest": adapter_digest(policy, "policy")}
+            resume_check = (diagnosis["before"]["exact"] and diagnosis["after"]["exact"] and diagnosis["tasks"]["exact"]
+                and diagnosis["original_policy_digest"] == diagnosis["restored_policy_digest"]
+                and repeated["loss"] == value["loss"])
+            diagnosis["passed"] = resume_check
+            write_json(args.run_dir / "recovery-check.json", diagnosis)
+            write_json(args.run_dir / "recovery-original-update.json", value)
+            write_json(args.run_dir / "recovery-restored-update.json", repeated)
+            del before_original, after_original, before_restored, after_restored
             if not resume_check:
-                raise RuntimeError("Real-model optimizer/block restoration changed the next update")
+                raise RuntimeError("Exact recovery check failed; see recovery-check.json for loss/gradient/parameter/optimizer differences")
         emit(args.run_dir, "smoke", phase="learning_check", step=step, total=20,
              **{k: v for k, v in value.items() if k != "samples"})
     final, final_loss = measure_smoke(policy, cache, selected)
@@ -549,6 +592,15 @@ def controller(args):
         if any(p.returncode for p in processes):
             raise RuntimeError("Experiment worker exited unsuccessfully")
     try:
+        if c["identity"].get("cache_parent") and not (run / "cache/complete.json").exists():
+            emit(run, "pipeline", phase="importing_verified_cache")
+            def progress(completed, total):
+                check_budget(c)
+                emit(run, "cache-import", phase="verifying_tensors", completed=completed, total=total)
+            import_verified_cache(run, c, progress)
+            emit(run, "cache-import", phase="complete", completed=10728, total=10728)
+            for shard in (0, 1):
+                emit(run, f"cache-{shard}", phase="reused_complete", completed=2010, total=2010)
         if not (run / "probe.json").exists():
             emit(run, "pipeline", phase="numerical_probe")
             wait([launch("probe", args.gpus[0])])
@@ -626,6 +678,8 @@ def parse_args(argv=None):
     parser.add_argument("--sft-adapter-path", type=Path)
     parser.add_argument("--baseline-csv", type=Path)
     parser.add_argument("--legacy-run", type=Path)
+    parser.add_argument("--reuse-run", type=Path)
+    parser.add_argument("--reuse-release", type=Path)
     parser.add_argument("--config", type=Path, default=ROOT / "configs/rl/grounded_uncertainty_v1.json")
     parser.add_argument("--gpu", default="auto")
     parser.add_argument("--gpus", nargs=2, default=["1", "2"])
@@ -642,6 +696,8 @@ def parse_args(argv=None):
         parser.error("This experiment uses two distinct GPUs with 32 GiB allocator limits")
     if args.role == "cache" and args.shard is None:
         parser.error("cache requires --shard")
+    if bool(args.reuse_run) != bool(args.reuse_release):
+        parser.error("Cache reuse requires both --reuse-run and --reuse-release")
     if args.budget_start is not None and not 0 < args.budget_start <= time.time():
         parser.error("Budget start must be an actual timestamp in the past")
     if args.role == "run" and not args.resume and not all((args.model_path, args.sft_adapter_path, args.baseline_csv, args.legacy_run)):
