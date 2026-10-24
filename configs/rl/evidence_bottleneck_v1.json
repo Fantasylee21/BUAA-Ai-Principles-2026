@@ -1,0 +1,9 @@
+{
+  "algorithm": "omni_evidence_bottleneck_v1",
+  "regularization": 0.01,
+  "max_iterations": 300,
+  "gradient_tolerance": 0.00001,
+  "function_tolerance": 0.000000000001,
+  "primary_gain": 0.015,
+  "replication_gain": 0.005
+}
