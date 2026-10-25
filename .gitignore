@@ -119,3 +119,25 @@ se
 # Project-local temporary files
 # ============================================================
 /tmp/
+# RL checkpoints & logs
+/output/rl/phase_grpo/
+/output/rl/*/checkpoint-*
+*.log
+# Исключаем веса моделей, кэши блокнотов и тяжелые папки
+*.safetensors
+*.bin
+*.pt
+*checkpoint*
+.ipynb_checkpoints/
+/output/rl/smoke/
+/output/rl/phase*
+/videos
+# Исключаем веса моделей, кэши блокнотов и тяжелые папки
+*.safetensors
+*.bin
+*.pt
+*checkpoint*
+.ipynb_checkpoints/
+/output/rl/smoke/
+/output/rl/phase*
+/videos
