@@ -9,7 +9,7 @@
 - 服务器 SFT 任务已进入真实参数更新，control 共 429 updates；已核对第 5 步 loss 1.43143。`tmux buaa-protocol-sft` 持久运行，依次执行 control 与 experiment 的训练、开发集选模和留出评估。尚无新模型评估分数。
 - 已完成服务器真实数据准备：训练 2,013 条、开发 670 条、留出 671 条；146 条 `use_in_main=false` 全部保留。control 训练子集 263 条 Conflict、2x 后总量 2,276；experiment 为 247 条 Conflict、2x 后总量 2,260。两组开发数据完全相同。运行目录为 `/home/nas/xingzhenbang/buaa-ai2026/runs/protocol-sft-ablation-seed42-20261025`，身份为 `1610d0d23a7dee7fdabeff2295db53ae9622c86f0129c90f4efde786adb428cf`。
 - 视觉与协议训练入口在服务器通过 22 项 CPU 检查。独立 `.venv-sft-protocol` 已完成模型加载和首批参数更新，旧 `.venv-rl` 的 102 项依赖元数据哈希核验未变；新模型成绩仍待评估。
-- `tmux buaa-visual-expert` 的 experiment 窗口已排队等待官方权重下载校验，之后执行 32 视频 GPU 预检、全训练集视觉提取与分组比较，不依赖本机进程保持运行。
+- 官方视觉权重已下载并完成 SHA 校验。首次视觉预检触发像素预算检查；修正按原采样帧数计算预算后，2,104 条几何审计和 32 条 CPU processor 复验通过。`tmux buaa-visual-expert` 的 `experiment-v2` 窗口使用独立 v2 源码和缓存执行 GPU 预检及提取，旧失败记录保留。
 - 计算安排在 `10.62.193.44`。本地只编辑源码、核查文件、执行 CPU 契约检查及通过 SSH 控制。重复的本地权重下载已停止。
 - GPU 0 有其他进程，不操作。GPU 1 用于成对 Omni 训练，GPU 2 用于新的视觉专家；启动前重新确认占用。每个子进程设 32 GiB PyTorch 分配器上限，并监控实际显存。
 

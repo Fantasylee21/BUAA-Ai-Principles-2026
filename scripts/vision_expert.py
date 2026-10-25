@@ -27,13 +27,13 @@ import numpy as np
 from rl.experiment import artifact_hash, file_hash, fingerprint, write_json
 from rl.reward import VALID_EMOTIONS
 
-VERSION = "qwen3vl8b_visual_expert_v1"
+VERSION = "qwen3vl8b_visual_expert_v2"
 PREFIX = '{"pred_emotion":"'
 SETTINGS = {"video_fps": 2., "video_min_frames": 4, "video_max_frames": 64,
     "video_pixels_per_frame": 50176, "max_prompt_tokens": 6144,
     "attn_implementation": "sdpa", "quantization": "nf4_double_quant_bfloat16",
     "sampling": "qwen3_native_count_uniform_rounded_indices_pyav_video_only",
-    "pixel_budget": "per_frame_max; qwen3_total_budget_scaled_by_padded_frame_count",
+    "pixel_budget": "per_frame_max; qwen3_total_budget_scaled_by_unpadded_sampled_frame_count",
     "seed": 42, "preflight_videos": 32, "storage": "float32_npz",
     "position": "last_token_before_emotion_value", "audio": False,
     "supplied_transcript": False, "physical_gpu": "2", "memory_limit_gib": 32.}
@@ -194,12 +194,14 @@ def processor_video_kwargs(sampled_frames, patch_size=16, temporal_patch_size=2,
             (patch_size, temporal_patch_size, merge_size) != (16, 2, 2)):
         raise ValueError("Unexpected Qwen3 frame/patch contract")
     padded_frames = math.ceil(sampled_frames / temporal_patch_size) * temporal_patch_size
-    # Qwen3 smart_resize's budget is padded-frame-count * H * W, unlike Omni's
-    # per-frame size. A one-patch minimum avoids rounding-driven upscaling
-    # beyond the fixed ceiling on tiny inputs; no frame exceeds 50176 pixels.
+    # The installed Qwen3 smart_resize compares padded_frames * H * W, but its
+    # downscaling beta uses the *unpadded* sampled_frames * source_H * source_W.
+    # Scale max_pixels by that same unpadded count: using padded_frames here
+    # permits odd-length inputs to exceed the fixed per-frame pixel ceiling.
+    # A one-patch minimum avoids extreme upscaling on tiny inputs.
     return {"do_sample_frames": False, "return_metadata": True,
             "size": {"shortest_edge": (patch_size * merge_size) ** 2 * padded_frames,
-                     "longest_edge": SETTINGS["video_pixels_per_frame"] * padded_frames}}
+                     "longest_edge": SETTINGS["video_pixels_per_frame"] * sampled_frames}}
 
 
 def validate_processed_geometry(grid, sampled_frames, token_count):
@@ -212,7 +214,10 @@ def validate_processed_geometry(grid, sampled_frames, token_count):
             not SETTINGS["video_min_frames"] <= actual_frames <= SETTINGS["video_max_frames"] or
             height * width > SETTINGS["video_pixels_per_frame"] or
             type(token_count) is not int or not 0 < token_count <= SETTINGS["max_prompt_tokens"]):
-        raise ValueError("Processor exceeded the fixed frame, pixel, or untruncated token budget")
+        raise ValueError("Processor exceeded the fixed frame, pixel, or untruncated token budget: " +
+            str({"grid": grid.tolist(), "sampled_frames": sampled_frames,
+                 "padded_frames": actual_frames, "pixels_per_frame": height * width,
+                 "tokens": token_count}))
     return {"video_grid_thw": grid.tolist(), "processed_frames_including_temporal_padding": actual_frames,
             "processed_frame_height": height, "processed_frame_width": width,
             "processed_pixels_per_frame": height * width, "input_tokens_including_prefix": token_count}

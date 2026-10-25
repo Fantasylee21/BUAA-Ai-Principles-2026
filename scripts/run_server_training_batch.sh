@@ -5,7 +5,7 @@ MODE=${1:?Usage: run_server_training_batch.sh start PROJECT_ROOT SOURCE_ROOT}
 PROJECT_ROOT=${2:?Missing server project root}
 SOURCE_ROOT=${3:?Missing frozen source directory}
 PYTHON=$PROJECT_ROOT/.venv-sft-protocol/bin/python
-BATCH=$PROJECT_ROOT/runs/model-training-batch-20261025
+BATCH=$PROJECT_ROOT/runs/model-training-batch-20261025-r2
 SCRIPT=$SOURCE_ROOT/scripts/run_server_training_batch.sh
 test -x "$PYTHON"
 test -f "$BATCH/IMPLEMENTATION_PLAN.md"
@@ -43,6 +43,6 @@ exec "$PYTHON" -m scripts.server_training_batch "$MODE" \
  --seed42-run "$PROJECT_ROOT/runs/protocol-sft-ablation-seed42-20261025" \
  --seed43-run "$PROJECT_ROOT/runs/protocol-sft-ablation-seed43-20261025" \
  --final-run "$PROJECT_ROOT/runs/protocol-sft-final-20261025" \
- --vision-run "$PROJECT_ROOT/runs/visual-expert-v1-20261025" \
+ --vision-run "$PROJECT_ROOT/runs/visual-expert-v2-20261025" \
  --audio-cache-dir "$PROJECT_ROOT/releases/evidence-calibrator-v1-20261025/data/llamafactory/generated/protocol_consistent" \
  --gpu 1 --max-wait-hours 72 --poll-seconds 20 >> "$BATCH/logs/$MODE-driver.log" 2>&1

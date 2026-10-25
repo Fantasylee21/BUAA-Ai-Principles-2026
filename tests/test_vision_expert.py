@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -120,12 +121,13 @@ class VisionExpertTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.sample_indices(total, fps)
 
-    def test_qwen3_total_pixel_budget_uses_padded_frames_not_temporal_grid(self):
+    def test_qwen3_total_pixel_budget_matches_unpadded_resize_beta(self):
         for n in (4, 5, 32, 63, 64):
             kwargs = app.processor_video_kwargs(n)
             padded = 2 * ((n + 1) // 2)
-            self.assertEqual(kwargs["size"]["longest_edge"], padded * 50176)
-            self.assertEqual(kwargs["size"]["longest_edge"] / padded, 50176)
+            self.assertEqual(kwargs["size"]["longest_edge"], n * 50176)
+            self.assertEqual(kwargs["size"]["longest_edge"] / n, 50176)
+            self.assertEqual(kwargs["size"]["shortest_edge"], padded * 1024)
             self.assertFalse(kwargs["do_sample_frames"])
         geometry = app.validate_processed_geometry([[32, 14, 14]], 64, 2000)
         self.assertEqual(geometry["processed_pixels_per_frame"], 50176)
@@ -133,6 +135,22 @@ class VisionExpertTests(unittest.TestCase):
                                     ([[32, 14, 14]], 64, 6145), ([[16, 14, 14]], 64, 2000)):
             with self.assertRaises(ValueError):
                 app.validate_processed_geometry(grid, frames, tokens)
+
+    def test_real_odd_frame_failure_keeps_strict_pixel_ceiling(self):
+        # Real preflight video_0001/0033: 73 @ 25fps selects five frames of
+        # 658x1920. Qwen3 5.8 checks padded count (6), then beta uses five.
+        # The previous six-frame max_pixels produced 128x416 = 53248 pixels.
+        height, width, count = 658, 1920, 5
+        self.assertEqual(len(app.sample_indices(73, 25.)), count)
+        kwargs = app.processor_video_kwargs(count)
+        budget = kwargs["size"]["longest_edge"]
+        beta = math.sqrt(count * height * width / budget)
+        resized = [max(32, math.floor(edge / beta / 32) * 32) for edge in (height, width)]
+        self.assertEqual(resized, [128, 352])
+        result = app.validate_processed_geometry([[3, resized[0] // 16, resized[1] // 16]], count, 241)
+        self.assertEqual(result["processed_pixels_per_frame"], 45056)
+        with self.assertRaises(ValueError):
+            app.validate_processed_geometry([[3, 8, 26]], count, 241)
 
     def test_decoder_requests_video_stream_zero_without_any_audio_decode(self):
         calls = []

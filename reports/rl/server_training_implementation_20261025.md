@@ -6,12 +6,14 @@
 
 - 服务器：`10.62.193.44`，项目根目录 `/home/nas/xingzhenbang/buaa-ai2026`。
 - 源码快照：`releases/model-training-v1-20261025`；已有训练源码不修改，新批次编排、汇总与全量训练入口作为附加文件部署并记录 SHA-256。
+- 视觉 v2 源码独立保存为 `releases/visual-expert-v2-20261025`，不修改正在训练的 SFT 源码。
 - GPU 1：Omni 协议对照、条件复验和条件全量训练，串行执行。
 - GPU 2：Qwen3-VL-8B 视觉证据实验。
 - GPU 0：已有其他进程，不操作。新阶段启动前检查所选 GPU 占用，遇到其他任务占用即停止该阶段，不结束其他进程。
 - 每个模型子进程设 32 GiB PyTorch 分配器上限。CUDA 上下文等额外分配仍须看实际显存。
 - SFT 使用独立 `.venv-sft-protocol`；旧 `.venv-rl` 保持原状。LlamaFactory 固定在 `97b32d3133b501432141a82949d5c7bc4d94f23a`。两组统一 SDPA，明确记录与历史 v4 FA2 的差异。
 - 所有训练与评估由服务器 tmux 执行，断开本机 SSH 后继续。结果保留在服务器，等用户通知后取回。
+- 首次视觉预检在第 18 条视频触发严格像素预算检查，v1 失败记录和已有缓存保留。视觉修正使用 v2 新目录，交付编排使用 r2 新目录；seed 42 的 SFT 不重新启动。
 
 ## 2. 数据与目标
 
@@ -59,6 +61,8 @@ seed 42 已有训练由原 tmux 持续执行。续接程序只等待它完成，
 
 自动流程为：权重校验 → 32 条训练视频真实 GPU 预检（包含训练集中最长帧数视频）→ 2,104 个独立训练视频的视觉特征 → 三折内容分组证据头及校准训练 → 父目录分组压力测试。
 
+v2 的 32 条真实 GPU 预检已通过，权重 hash 不变，平均每视频约 0.52 秒，峰值预留显存约 8.96 GB；已进入全部训练视频提取。此次真实视频最多采样 38 帧，没有覆盖 64 帧上限；全提取耗时仍以实际日志为准。
+
 只替换视觉分支，Omni 文本/音频分支在同折共享。提示不带文本转录、标签或来源 ID，PyAV 只解码视频轨。对齐名义帧率、帧数和每帧像素预算；不声称两模型具有完全相同的采样与预处理。
 
 晋级条件是主分组不确定性任务分量提高至少 0.01、自然冲突识别不下降、父目录压力分量不下降。32 视频预检推算全提取超过 24 GPU 小时则停止该提取路线。B 路本批产出冻结视觉模型加可训练证据头的对照结果；**视觉 QLoRA 与更复杂融合属于取回证据后的后续批次**，不在本批承诺已实现。A 路是真实大模型 QLoRA 训练主线。
@@ -81,12 +85,12 @@ seed 42 已有训练由原 tmux 持续执行。续接程序只等待它完成，
 | 用途 | tmux | 运行目录（均在项目根目录下） |
 |---|---|---|
 | seed 42 对照 | `buaa-protocol-sft` | `runs/protocol-sft-ablation-seed42-20261025` |
-| 条件复验、全量与归档 | `buaa-training-delivery`，窗口 `protocol`、`collect` | `runs/model-training-batch-20261025` |
+| 条件复验、全量与归档 | `buaa-training-delivery`，窗口 `protocol`、`collect` | `runs/model-training-batch-20261025-r2` |
 | seed 43（条件触发） | 由 delivery 的 protocol 子进程执行 | `runs/protocol-sft-ablation-seed43-20261025` |
 | 全量最终训练（条件触发） | 同上 | `runs/protocol-sft-final-20261025` |
-| 视觉证据 | `buaa-visual-expert`，窗口 `download-ms`、`experiment` | `runs/visual-expert-v1-20261025` |
+| 视觉证据 | `buaa-visual-expert`，窗口 `experiment-v2` | `runs/visual-expert-v2-20261025` |
 
-服务器完整计划另保存为 `runs/model-training-batch-20261025/IMPLEMENTATION_PLAN.md`。
+服务器完整计划另保存为 `runs/model-training-batch-20261025-r2/IMPLEMENTATION_PLAN.md`。
 
 查看进度：
 
@@ -96,9 +100,9 @@ tmux attach -t buaa-training-delivery
 tmux attach -t buaa-visual-expert
 # 用 Ctrl+b 后按 d 脱离会话，训练继续。
 tail -f /home/nas/xingzhenbang/buaa-ai2026/runs/protocol-sft-ablation-seed42-20261025/logs/control.log
-cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025/protocol.status.json
-cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025/collect.status.json
-cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025/COMPLETE.json
+cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025-r2/protocol.status.json
+cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025-r2/collect.status.json
+cat /home/nas/xingzhenbang/buaa-ai2026/runs/model-training-batch-20261025-r2/COMPLETE.json
 ```
 
 初始 control 的实际日志已观察到 optimizer update，首条记录 loss 1.43143，约 22–25 秒/update；429 updates 的单组纯训练约 3 小时，另加开发/留出生成评估。触发复验和全量训练后总耗时可能超过一天；具体耗时由实际日志记录。用户通知后再从服务器取回本批结果。
