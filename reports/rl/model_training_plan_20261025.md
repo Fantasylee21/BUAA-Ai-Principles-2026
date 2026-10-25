@@ -6,9 +6,9 @@
 
 - 固定补漏 C1 仅提交一次，Public **0.90175**，低于原文件，保留原最佳。
 - 六特征校准 C2 在训练集内容分组下自然冲突识别下降，未晋级。
-- 服务器 SFT 任务已启动，首次核查处于 control 数据预处理阶段，尚未观察到参数更新或新的模型成绩。`tmux buaa-protocol-sft` 持久运行，依次执行 control 与 experiment 的训练、开发集选模和留出评估。
+- 服务器 SFT 任务已进入真实参数更新，control 共 429 updates；已核对第 5 步 loss 1.43143。`tmux buaa-protocol-sft` 持久运行，依次执行 control 与 experiment 的训练、开发集选模和留出评估。尚无新模型评估分数。
 - 已完成服务器真实数据准备：训练 2,013 条、开发 670 条、留出 671 条；146 条 `use_in_main=false` 全部保留。control 训练子集 263 条 Conflict、2x 后总量 2,276；experiment 为 247 条 Conflict、2x 后总量 2,260。两组开发数据完全相同。运行目录为 `/home/nas/xingzhenbang/buaa-ai2026/runs/protocol-sft-ablation-seed42-20261025`，身份为 `1610d0d23a7dee7fdabeff2295db53ae9622c86f0129c90f4efde786adb428cf`。
-- 视觉与协议训练入口在服务器通过 22 项 CPU 检查。独立 `.venv-sft-protocol` 的训练入口已通过导入，旧 `.venv-rl` 的 102 项依赖元数据哈希核验未变；实际模型加载、参数更新与新模型成绩仍待运行验证。
+- 视觉与协议训练入口在服务器通过 22 项 CPU 检查。独立 `.venv-sft-protocol` 已完成模型加载和首批参数更新，旧 `.venv-rl` 的 102 项依赖元数据哈希核验未变；新模型成绩仍待评估。
 - `tmux buaa-visual-expert` 的 experiment 窗口已排队等待官方权重下载校验，之后执行 32 视频 GPU 预检、全训练集视觉提取与分组比较，不依赖本机进程保持运行。
 - 计算安排在 `10.62.193.44`。本地只编辑源码、核查文件、执行 CPU 契约检查及通过 SSH 控制。重复的本地权重下载已停止。
 - GPU 0 有其他进程，不操作。GPU 1 用于成对 Omni 训练，GPU 2 用于新的视觉专家；启动前重新确认占用。每个子进程设 32 GiB PyTorch 分配器上限，并监控实际显存。
@@ -32,6 +32,8 @@
 只使用原始训练集进行按视频与媒体 SHA 合并的 60%/20%/20% 分组，同视频 VT/VA、重复内容不能跨组。固定 split seed 42；两组用相同划分。每个 epoch 在开发集生成完整输出，以综合 Score 选 checkpoint，然后只评估选定 checkpoint 的留出集结果。开发/留出均使用原始标签及正式协议输入，不读取官方 val/test 选模。
 
 seed 42 对照完成后，综合分提高至少 0.01、情感 Macro-F1 下降不超过 0.005、自然冲突识别不下降，才进入 seed 43 复验。两个训练 seed 均通过，才按开发阶段确定的轮数在全部原始训练数据上训练最终模型。不能从训练 loss 下降推断 Kaggle 提分。
+
+这部分现已实现自动续接、双 seed 晋级、固定轮数全量训练和结果归档。完整执行范围、tmux、完成标志及取回方式见 [服务器实施计划](server_training_implementation_20261025.md)。最终轮数预先固定为两 seed 实验组开发所选 epoch 均值向上取整，不用正式 val 选择。
 
 执行入口：`python -m scripts.protocol_sft_ablation prepare` 与 `train --arm control|experiment --gpu 1`。实际划分、样本数、配置、checkpoint 及评估结果由独立运行目录保存。
 
