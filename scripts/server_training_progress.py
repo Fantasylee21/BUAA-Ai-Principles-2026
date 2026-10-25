@@ -168,15 +168,28 @@ def render(project, batch):
         lines.append(f"Log last changed {max(0, int(time.time() - log.stat().st_mtime))}s ago; latest bar may belong to prior stage.")
     except OSError:
         pass
-    lines += ["", "B / GPU 2: " + read(vision / "pipeline.status.json").get("phase", "waiting")]
-    visual_rows = records(vision / "logs/extract.log")
+    visual_status = read(vision / "pipeline.status.json")
+    device = "CPU" if visual_status.get("gpu_used") is False else "GPU 2"
+    lines += ["", "B / " + device + ": " + visual_status.get("phase", "waiting")]
+    visual_cache = vision
+    provenance = read(vision / "evaluation/identity.json").get("identity", {}).get("provenance", {})
+    original_error = provenance.get("original_failure", {}).get("path")
+    if original_error:
+        visual_cache = Path(original_error).parents[1]
+    visual_rows = records(visual_cache / "logs/extract.log")
     cached = next((v for v in reversed(visual_rows) if "completed" in v), {})
     if cached:
         lines.append("Visual features " + bar(cached["completed"], cached.get("total", 0)))
-    if read(vision / "pipeline.status.json").get("phase") == "failed":
+    cpu_status = read(vision / "evaluation/status.json")
+    if device == "CPU" and cpu_status:
+        lines.append(f"CPU phase={cpu_status.get('phase', '--')} job={cpu_status.get('job', '--')}")
+        if "iteration" in cpu_status:
+            lines.append(f"iteration={cpu_status['iteration']}/{cpu_status.get('max_iterations', '--')} (ceiling)"
+                         f"   loss={number(cpu_status.get('loss'))}")
+    if visual_status.get("phase") == "failed":
         errors = tail(vision / "logs/evaluate.log").splitlines() + tail(vision / "logs/extract.log").splitlines()
         error = next((line for line in reversed(errors) if line.startswith(("RuntimeError:", "ValueError:", "AssertionError:"))), "See preserved B logs for failure reason.")
-        lines.append(error[:110])
+        lines.append(str(visual_status.get("reason", error))[:110])
     complete = read(batch / "COMPLETE.json")
     lines += ["", "Batch: " + ("ENDED; inspect FINAL_REPORT.json for outcomes" if complete else read(batch / "collect.status.json").get("phase", "waiting")),
               "Bars describe individual stages; full batch ETA is unknown.",
@@ -190,7 +203,8 @@ def main():
     parser.add_argument("--batch-dir", type=Path)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    batch = args.batch_dir or args.project_root / "runs/model-training-batch-20261025-r2"
+    recovered = args.project_root / "runs/model-training-batch-20261025-r3"
+    batch = args.batch_dir or (recovered if recovered.exists() else args.project_root / "runs/model-training-batch-20261025-r2")
     try:
         while True:
             screen = render(args.project_root, batch)
