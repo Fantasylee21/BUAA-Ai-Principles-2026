@@ -106,6 +106,31 @@ text and retains its original target because no paired VT annotation exists.
 
 ### Omni policy
 
+The policy below describes the historical default (`--omni-input-policy legacy`).
+For the protocol-consistent experiment, use
+`--omni-input-policy protocol_consistent` for both cleaning and SFT conversion.
+It preserves the original VT/VA labels: VT uses video plus text; VA uses video
+plus audio and withholds text at training and evaluation. It retains all
+`use_in_main=false` records and all view/clarity annotations. Only clear M1/M2
+views are eligible for future auxiliary supervision; this flag does not add an
+auxiliary loss to the current SFT trainer.
+
+```bash
+python data/prepare_training_data.py --omni-input-policy protocol_consistent
+python data/prepare_training_data.py --input Dataset/val.jsonl --expected-split val --omni-input-policy protocol_consistent
+python scripts/prepare_sft_data.py --omni-input-policy protocol_consistent
+python scripts/prepare_resampled_sft_data.py --source-dir data/llamafactory/generated/protocol_consistent --output-dir data/llamafactory/generated/protocol_consistent/resampled_2x --conflict-factor 2
+```
+
+The new cleaned train/val directories are separate from the historical files.
+Omni retains 3,354/666 rows and 411/74 original Conflict labels. Generated SFT
+data and its dataset registry live under
+`data/llamafactory/generated/protocol_consistent/`; the legacy registry remains
+unchanged. The matching configuration is
+`configs/sft/qwen25omni/qlora_sft_v5_protocol.yaml`. It is a data-protocol control,
+with the v4 model and optimization settings retained; it does not establish a
+new score or replace the planned grouped train/development/holdout comparison.
+
 VT records retain their original vision-text input. VA records use vision,
 `text_content`, and audio. For paired samples, effective VA uncertainty is the
 union of the VT and VA conflict annotations: if either source protocol is

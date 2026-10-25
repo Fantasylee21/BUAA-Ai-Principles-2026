@@ -109,6 +109,7 @@ se
 # SFT generated data, checkpoints, and experiment logs
 # ============================================================
 /data/llamafactory/generated/
+/data/cleaned/protocol_consistent/
 /output/sft/*
 /output/val_merged_model
 !/output/sft/evaluation/

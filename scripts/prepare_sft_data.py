@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import random
@@ -45,17 +46,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument(
-        "--train-clean-dir", type=Path, default=Path("data/cleaned/all")
+        "--train-clean-dir", type=Path, default=None
     )
     parser.add_argument(
-        "--val-clean-dir", type=Path, default=Path("data/cleaned/val")
+        "--val-clean-dir", type=Path, default=None
     )
     parser.add_argument(
         "--questions-dir", type=Path, default=Path("data/cleaned")
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("Dataset"))
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("data/llamafactory/generated")
+        "--output-dir", type=Path, default=None
+    )
+    parser.add_argument(
+        "--omni-input-policy", choices=("legacy", "protocol_consistent"), default="legacy",
+        help="Use protocol-consistent cleaned inputs and a separate generated directory; legacy remains the default.",
     )
     parser.add_argument("--selection-seed", default=DATA_ORDER_SEED)
     parser.add_argument(
@@ -147,6 +152,27 @@ def validate_source_rows(
             video = dataset_root / row["video"]
             if not video.is_file():
                 raise FileNotFoundError(video)
+
+
+def validate_omni_input_policy(rows: list[dict[str, Any]], policy: str) -> None:
+    """Never reinterpret already union-labelled legacy rows as original labels."""
+    if policy not in ("legacy", "protocol_consistent"):
+        raise ValueError("Unknown Omni input policy")
+    for row in rows:
+        if row.get("omni_input_policy", "legacy") != policy:
+            raise ValueError("Cleaned Omni rows do not match --omni-input-policy")
+        if policy == "protocol_consistent":
+            if row["source_protocol"] not in ("VT", "VA"):
+                raise ValueError("Protocol-consistent rows require VT or VA")
+            expected = {"vision", "text" if row["source_protocol"] == "VT" else "audio"}
+            views = row.get("views", {})
+            if (set(row["input_modalities"]) != expected or
+                    row["training_protocol"] != row["source_protocol"] or
+                    row["sample_type"] != row["original_sample_type"] or
+                    set(views) != {"M1", "M2", "M12"} or
+                    row["pred_emotion"] != views["M12"]["label"] or
+                    row["is_uncertain"] != ("yes" if row["sample_type"] == "Conflict" else "no")):
+                raise ValueError("Protocol-consistent inputs must retain original protocol and labels")
 
 
 def load_questions(
@@ -456,6 +482,10 @@ def make_sft_records(
             }
             if model_family == "omni":
                 record["audios"] = audios
+                if row.get("omni_input_policy") == "protocol_consistent":
+                    record.update({key: deepcopy(row[key]) for key in (
+                        "omni_input_policy", "views", "view_supervision", "use_in_main",
+                        "sample_type", "original_sample_type")})
             records.append(record)
 
     # Deterministic mixing avoids source-order bias. It also ensures Omni VT
@@ -493,6 +523,13 @@ def validate_sft_records(
         expected_modalities = INPUT_POLICIES.get(
             (model_family, split_name, protocol)
         )
+        policy = record.get("omni_input_policy", "legacy")
+        if policy not in ("legacy", "protocol_consistent"):
+            raise ValueError(f"Unknown Omni input policy at {model_family}:{index}")
+        if model_family == "omni" and policy == "protocol_consistent":
+            if protocol not in ("VT", "VA") or split_name not in ("train", "val"):
+                raise ValueError(f"Invalid protocol/split at {model_family}:{index}")
+            expected_modalities = {"vision", "text" if protocol == "VT" else "audio"}
         if modalities != expected_modalities:
             raise ValueError(
                 f"Input policy mismatch at {model_family}:{index}: "
@@ -550,7 +587,7 @@ def validate_sft_records(
     }
 
 
-def dataset_info() -> dict[str, Any]:
+def dataset_info(file_prefix: str = "generated") -> dict[str, Any]:
     common_tags = {
         "role_tag": "role",
         "content_tag": "content",
@@ -568,7 +605,7 @@ def dataset_info() -> dict[str, Any]:
             if model_family == "omni":
                 columns["audios"] = "audios"
             entries[f"affect_sft_{model_family}_{split}"] = {
-                "file_name": f"generated/affect_sft_{model_family}_{split}.jsonl",
+                "file_name": str(Path(file_prefix) / f"affect_sft_{model_family}_{split}.jsonl").replace("\\", "/"),
                 "formatting": "sharegpt",
                 "columns": columns,
                 "tags": common_tags,
@@ -580,11 +617,16 @@ def main() -> None:
     args = parse_args()
     inferred_root = Path(__file__).resolve().parents[1]
     repo_root = (args.repo_root or inferred_root).resolve()
-    train_clean_dir = resolve_from_root(repo_root, args.train_clean_dir)
-    val_clean_dir = resolve_from_root(repo_root, args.val_clean_dir)
+    consistent = args.omni_input_policy == "protocol_consistent"
+    clean_root = Path("data/cleaned/protocol_consistent")
+    train_clean_dir = resolve_from_root(repo_root, args.train_clean_dir or (clean_root / "train" if consistent else Path("data/cleaned/all")))
+    val_clean_dir = resolve_from_root(repo_root, args.val_clean_dir or (clean_root / "val" if consistent else Path("data/cleaned/val")))
     questions_dir = resolve_from_root(repo_root, args.questions_dir)
     dataset_root = resolve_from_root(repo_root, args.dataset_root)
-    output_dir = resolve_from_root(repo_root, args.output_dir)
+    output_dir = resolve_from_root(repo_root, args.output_dir or Path(
+        "data/llamafactory/generated/protocol_consistent" if consistent else "data/llamafactory/generated"))
+    if consistent and output_dir.resolve() == (repo_root / "data/llamafactory/generated").resolve():
+        raise ValueError("Protocol-consistent SFT requires a separate generated output directory")
 
     source_paths = {
         "vl_train": train_clean_dir / "train_vl_clean.jsonl",
@@ -593,6 +635,8 @@ def main() -> None:
         "omni_val": val_clean_dir / "val_omni_clean.jsonl",
     }
     source_rows = {name: read_jsonl(path) for name, path in source_paths.items()}
+    for split_name in ("train", "val"):
+        validate_omni_input_policy(source_rows[f"omni_{split_name}"], args.omni_input_policy)
     validate_source_rows(
         source_rows["vl_train"],
         source_rows["omni_train"],
@@ -662,23 +706,24 @@ def main() -> None:
 
     generation_manifest = {
         "format": "LlamaFactory ShareGPT multimodal SFT",
+        "omni_input_policy": args.omni_input_policy,
         "question_policy": args.question_policy,
         "selection_seed": args.selection_seed,
         "partitions": {
             "train": {
-                "source": "Dataset/train.jsonl via data/cleaned/all",
+                "source": relative_to_repo(train_clean_dir, repo_root),
                 "groups": len(train_groups),
                 "target_mode": "full",
                 "input_policy": {
                     "vl": {"VT": ["vision", "text"], "VA": ["vision", "text"]},
                     "omni": {
                         "VT": ["vision", "text"],
-                        "VA": ["vision", "text", "audio"],
+                        "VA": ["vision", "audio"] if consistent else ["vision", "text", "audio"],
                     },
                 },
             },
             "val": {
-                "source": "Dataset/val.jsonl via data/cleaned/val",
+                "source": relative_to_repo(val_clean_dir, repo_root),
                 "groups": len(val_groups),
                 "target_mode": "emotion_only",
                 "input_policy": {
@@ -704,13 +749,16 @@ def main() -> None:
         },
         "datasets": all_stats,
         "llamafactory_runtime": {
-            "dataset_dir": "data/llamafactory",
+            "dataset_dir": relative_to_repo(output_dir, repo_root) if consistent else "data/llamafactory",
             "media_dir": ".",
             "dataset_names": sorted(dataset_info()),
         },
     }
     write_json(output_dir / "generation_manifest.json", generation_manifest)
-    write_json(repo_root / "data/llamafactory/dataset_info.json", dataset_info())
+    if consistent:
+        write_json(output_dir / "dataset_info.json", dataset_info(""))
+    else:
+        write_json(repo_root / "data/llamafactory/dataset_info.json", dataset_info())
 
     print(
         json.dumps(
