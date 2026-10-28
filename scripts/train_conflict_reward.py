@@ -14,7 +14,7 @@ import time
 from rl.conflict_reward import SETTINGS, VERSION, anchored_logit, batches, counts_for, objective, predicted
 from rl.experiment import artifact_hash, fingerprint
 from rl.reward import parse_completion, question_is_consistent
-from scripts.joint_affect_pipeline import read, atomic, immutable, digest, run_lock
+from scripts.joint_affect_pipeline import read, atomic, immutable, digest
 
 STOP = False
 
@@ -51,7 +51,8 @@ def context(args):
     else:
         part = manifest["folds"][c["grouping"]]["folds"][int(c["fold"])]
         train, held = part["train"], part["held"]
-    c.update(rows=rows, train=[rows[i] for i in train], held=[rows[i] for i in held], manifest_value=manifest)
+    c.update(rows=rows, train=[rows[i] for i in train], held=[rows[i] for i in held], manifest_value=manifest,
+             _deadline_unix=args.deadline_unix)
     args.output.mkdir(parents=True, exist_ok=True)
     return c
 
@@ -96,16 +97,16 @@ def setup(args, c, training=False, checkpoint=None):
 class MediaCache:
     """Only immutable encoder outputs/processor inputs, never language states.
 
-    The frozen encoders are shared by all folds/arms. Each entry is locked and
-    checksum-protected. Policy/reference decoder forwards still run on every use.
+    The frozen encoders are shared by all folds/arms. Only creation is locked;
+    completed, checksum-protected entries are immutable and allow concurrent
+    readers. Policy/reference decoder forwards still run on every use.
     """
     def __init__(self, c, policy):
         self.c, self.policy = c, policy
         self.root = Path(c["batch_root"]) / "media-cache"
         self.checked = set()
 
-    def load(self, row):
-        from rl.finite_runtime import pack_cache, unpack_cache
+    def key_for(self, row):
         media = self.c["manifest_value"]["media"].get(row["video"])
         if media is None:
             media = digest(Path(self.c["data_root"])/row["video"])
@@ -115,26 +116,41 @@ class MediaCache:
             safe["text_content"] = ""
         key = fingerprint({"input": safe, "media_sha256": media, "base": self.c["base_identity"],
                            "settings": {k: SETTINGS[k] for k in SETTINGS if k.startswith(("video_", "audio_", "max_prompt"))}})
+        return key,media,safe
+
+    def check(self):
+        if STOP or time.time()>=self.c.get("_deadline_unix",float("inf")):
+            raise InterruptedError("Stop/deadline requested while waiting for media cache")
+
+    def load(self, row):
+        from rl.finite_runtime import pack_cache, unpack_cache
+        from rl.cache_io import cache_writer_lock
+        key,media,safe=self.key_for(row)
         root = self.root/key
         path = root/"media.pt"
-        with run_lock(root):
-            marker = root/"complete.json"
-            if not marker.exists():
-                if digest(Path(self.c["data_root"])/row["video"]) != media:
-                    raise ValueError("Media content changed before decoding")
-                prefix = self.policy.prepare({"sample_id":row["sample_id"], **safe}, self.c["data_root"])
-                features = self.policy.perception(prefix)
-                packed = pack_cache(self.policy.torch, prefix, features)
-                temp = root/"media.partial"
-                self.policy.torch.save(packed, temp)
-                temp.replace(path)
-                immutable(marker, {"key": key, "sha256": digest(path), "frozen_perception_only": True})
-                del prefix, features, packed
-            m = read(marker)
-            if m["key"] != key or (key not in self.checked and digest(path) != m["sha256"]):
-                raise ValueError("Frozen media cache failed integrity validation")
-            packed = self.policy.torch.load(path, map_location="cpu", weights_only=True)
-            self.checked.add(key)
+        marker = root/"complete.json"
+        if not marker.exists():
+            with cache_writer_lock(root,self.check):
+                # A different process may have published it while we waited.
+                if not marker.exists():
+                    if digest(Path(self.c["data_root"])/row["video"]) != media:
+                        raise ValueError("Media content changed before decoding")
+                    prefix = self.policy.prepare({"sample_id":row["sample_id"], **safe}, self.c["data_root"])
+                    features = self.policy.perception(prefix)
+                    packed = pack_cache(self.policy.torch, prefix, features)
+                    temp = root/"media.partial"
+                    self.policy.torch.save(packed, temp)
+                    temp.replace(path)
+                    # Publish metadata by rename, so readers cannot observe an
+                    # empty/partial marker while the writer is flushing JSON.
+                    atomic(marker, {"key": key, "sha256": digest(path), "frozen_perception_only": True})
+                    del prefix, features, packed
+        self.check()
+        m = read(marker)
+        if m["key"] != key or (key not in self.checked and digest(path) != m["sha256"]):
+            raise ValueError("Frozen media cache failed integrity validation")
+        packed = self.policy.torch.load(path, map_location="cpu", weights_only=True)
+        self.checked.add(key)
         return unpack_cache(self.policy.torch, packed)
 
 
