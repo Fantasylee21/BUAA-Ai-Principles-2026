@@ -65,3 +65,14 @@
 增加独立进程回归测试：持有旧锁时两个进程同时读取同一完成项，以及两个进程同时创建同一缺失项且只解码一次。恢复工具对分区、原始数据、基座/参考adapter、推理源码、科学设置、原始shard SHA和逐条预测进行核对，重新包装来源记录，保留原始预测及log-odds不变；不导入任何旧策略/优化器checkpoint。
 
 r2失败记录和首步checkpoint保留。r3三组从相同SFT参考重新开始，复用完成的参考概率和冻结媒体缓存，不重新进行整折参考推理。24/72小时时钟继承最初的2026-10-28 14:57:39，奖励、采样、学习率、轮数、选择门槛和提交策略均未改变。
+
+#### r3 恢复验收
+
+- 当前源码：`/home/nas/xingzhenbang/buaa-ai2026/releases/conflict-reward-v1-20261028-r3`，源码提交 `8b9d3e842230686238141947279d180a78afb196`。
+- 当前运行：`/home/nas/xingzhenbang/buaa-ai2026/runs/conflict-reward-v1-20261028-r3`，tmux仍为 `buaa-conflict-rl`，窗口1为只读进度。
+- 本地49项测试中47项通过、2项POSIX进程专用测试留给服务器；服务器在实际NAS目录上 **49项全部通过**，CPU测试屏蔽GPU。
+- 真实32样本预检重新通过：包括卸载重建后的恢复一致性，峰值9.2637 GiB。3,354条参考预测及log-odds另经独立逐项比较，完全不变。
+- 北京时间2026-10-28 **18:58:27**，A/B均已运行到 **28/280**，没有失败报告；两组第20步checkpoint的全部文件SHA均已校验，策略digest已变化，参考digest与预检一致。训练峰值显存两组均为11.9414 GiB，低于40 GiB。
+- 对比r2/r3的A/B首步loss、PG loss、KL、零优势比例、概率、梯度、学习率及样本计数，逐值完全一致，最大差异0。该核查使用训练观察，不是模型泛化或Kaggle成绩。
+- 本地证据在 `runs/conflict-reward-v1-20261028-r3/preflight/` 和 `runs/conflict-reward-v1-20261028-r3/recovery-runtime-verified.json`；服务器同一审计位于 `reports/recovery-runtime-verified.json`，最终归档会包含它。
+- 没有改门槛、重置预算、运行留出选模之外的试探或提交Kaggle。后台控制器继续原有固定流程。
