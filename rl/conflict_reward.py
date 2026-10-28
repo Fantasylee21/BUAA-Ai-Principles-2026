@@ -21,6 +21,7 @@ SETTINGS = {
     "max_completion_length": 128, "attn_implementation": "sdpa",
     "candidate_micro_batch_size": 1, "save_every": 20,
     "budget_hours": 72, "pilot_hours": 24, "memory_gib": 40,
+    "deterministic_algorithms": True,
 }
 
 

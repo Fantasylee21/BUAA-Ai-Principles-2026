@@ -311,7 +311,7 @@ class Pipeline:
 
     def archive(self):
         paths=[]
-        for name in ("plan.json","status.json","clock.json","FINAL_REPORT.json","primary-report.json","final-model-lock.json"):
+        for name in ("plan.json","status.json","clock.json","FINAL_REPORT.json","primary-report.json","final-model-lock.json","recovery.json"):
             if (self.root/name).is_file():paths.append(self.root/name)
         for folder in ("reports","preflight","delivery","jobs","official"):
             for p in (self.root/folder).rglob("*"):

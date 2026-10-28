@@ -8,6 +8,7 @@ import io
 import math
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from rl.conflict_reward import (reward_weight, anchored_logit, objective, batches,
@@ -136,6 +137,36 @@ class PolicyMathematics(unittest.TestCase):
         full,=torch.autograd.grad(loss,score,retain_graph=True)
         half,=torch.autograd.grad(loss/2,score)
         self.assertAlmostEqual(float(half),float(full)/2)
+
+    @unittest.skipUnless(importlib.util.find_spec("peft"),"PEFT checkpoint integration runs on server")
+    def test_real_peft_optimizer_rng_round_trip(self):
+        import torch
+        from peft import LoraConfig,get_peft_model,get_peft_model_state_dict,set_peft_model_state_dict
+        from rl.state import save_checkpoint,adapter_digest
+        from scripts.train_conflict_reward import restore
+        torch.manual_seed(45)
+        config=LoraConfig(r=2,lora_alpha=4,lora_dropout=0.,target_modules=["0"])
+        model=get_peft_model(torch.nn.Sequential(torch.nn.Linear(4,4)),config,adapter_name="policy")
+        model.add_adapter("reference",config)
+        set_peft_model_state_dict(model,get_peft_model_state_dict(model,adapter_name="policy"),adapter_name="reference")
+        model.set_adapter("policy")
+        def trainable():
+            for n,p in model.named_parameters():p.requires_grad_(".policy." in n)
+        trainable()
+        policy=SimpleNamespace(model=model,torch=torch,_set_trainability=trainable,
+            processor=SimpleNamespace(save_pretrained=lambda path:Path(path).mkdir(parents=True,exist_ok=True)))
+        opt=torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],lr=.01)
+        sch=torch.optim.lr_scheduler.LambdaLR(opt,lambda _:1.)
+        def step():
+            opt.zero_grad(set_to_none=True)
+            x=torch.randn(3,4)
+            model(x).square().mean().backward();opt.step();sch.step()
+        step()
+        with tempfile.TemporaryDirectory() as folder:
+            cp=save_checkpoint(Path(folder),policy,opt,sch,1,{"test":"checkpoint"})
+            step();expected=adapter_digest(policy,"policy")
+            restore(policy,opt,sch,cp,{"test":"checkpoint"})
+            step();self.assertEqual(adapter_digest(policy,"policy"),expected)
 
 
 class FakePipeline(Pipeline):

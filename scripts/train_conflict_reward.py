@@ -73,6 +73,9 @@ def setup(args, c, training=False, checkpoint=None):
     torch.cuda.set_per_process_memory_fraction(min(1., 40 * 1024**3 / torch.cuda.get_device_properties(0).total_memory))
     torch.cuda.reset_peak_memory_stats()
     torch.backends.cuda.matmul.allow_tf32 = False
+    # The real GPU preflight found bitwise resume drift without this. Keep
+    # identical deterministic kernels for every arm, seed and inference job.
+    torch.use_deterministic_algorithms(SETTINGS["deterministic_algorithms"])
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -345,17 +348,29 @@ def preflight(args,c):
     cp=save_checkpoint(args.output,policy,opt,sch,1,experiment)
     second,trace=update(args,policy,media,rows[16:],entries,counts_for(c["train"]),opt,sch)
     final=adapter_digest(policy,"policy")
+    peak_before=policy.torch.cuda.max_memory_reserved()/1024**3
+    torch=policy.torch
+    del policy,media,opt,sch
+    import gc
+    gc.collect();torch.cuda.empty_cache()
+    emit(args,"preflight_reload_and_resume",current_steps=1,total_steps=2)
+    policy=setup(args,c,training=True,checkpoint=cp)
+    media=MediaCache(c,policy)
+    opt,sch=optimizer_for(policy,2)
     restore(policy,opt,sch,cp,experiment)
     replay,trace2=update(args,policy,media,rows[16:],entries,counts_for(c["train"]),opt,sch)
-    if trace!=trace2 or final!=adapter_digest(policy,"policy"):
+    resumed=adapter_digest(policy,"policy")
+    immutable(args.output/"resume-audit.json",{"fresh_model_reloaded":True,"action_trace_identical":trace==trace2,
+        "uninterrupted_digest":final,"resumed_digest":resumed,"parameter_digest_identical":final==resumed})
+    if trace!=trace2 or final!=resumed:
         raise ValueError("Interrupted/resumed update differs from uninterrupted training")
     if adapter_digest(policy,"reference")!=ref or final==initial or max(first["grad_norm"],second["grad_norm"])<=0:
         raise ValueError("Real adapter update/frozen reference audit failed")
-    peak=policy.torch.cuda.max_memory_reserved()/1024**3
+    peak=max(peak_before,policy.torch.cuda.max_memory_reserved()/1024**3)
     if peak>40+1e-6:
         raise ValueError("40 GiB preflight memory budget exceeded")
     result={"passed":True,"samples":32,"zero_update_unchanged":True,"raw_media_checks":audits,
-        "resume_identical":True,"reference_digest":ref,"updated_policy_digest":final,
+        "resume_identical":True,"fresh_model_reloaded":True,"reference_digest":ref,"updated_policy_digest":final,
         "trainable_parameters":sum(p["parameters"] for p in params),"peak_reserved_gib":peak,
         "seconds_per_update_with_warm_cache":(time.monotonic()-start)/3,
         "observations":[first,second],"weights_discarded":True}

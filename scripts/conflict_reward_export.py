@@ -50,7 +50,7 @@ def cache(args,c):
     root,lock=locked(args,c);path,rows=official_rows(c,args.split)
     source=digest(path)
     base=baseline_csv(root/"submission09.csv") if args.split=="test" else {}
-    if base and (digest(root/"submission09.csv")!=lock["baseline_sha256"] or set(base)!={r["sample_id"] for r in rows}):
+    if base and (digest(root/"submission09.csv")!=lock["baseline_sha256"] or list(base)!=[r["sample_id"] for r in rows]):
         raise ValueError("Submission09 identity/coverage changed")
     policy=setup(args,c);media=MediaCache(c,policy)
     entries=[]
