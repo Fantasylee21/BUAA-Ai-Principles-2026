@@ -24,6 +24,17 @@ Score = 0.5 * Macro-F1
 S2 RL 的奖励、固定实验配置、显卡切换、tmux 启动与断点恢复见
 [RL 实施说明](rl/README.md)。RL 从已交付的 Omni v4 adapter 继续训练。
 
+## xzb 分支实验说明与结果
+
+合入 `main` 后阅读这部分工作，请从[实验说明：方法、代码结构与结果](reports/EXPERIMENTS.md)
+开始。文档覆盖奖励 RL、直接纠错、模态证据与校准、协议一致 SFT、冻结 / 可训练
+8B 视觉专家、联合情感模型和 7B E/U 分离方案，并列出入口、设置、结果、证据和复现依赖。
+
+截至本地已归档证据，多数后续方法尚未取得稳定的完整系统收益；冻结 8B 证据有分支收益，
+A/B/C 冲突奖励首折未晋级，7B 方案仅有预检与准入快照。各数据划分的本地分数和
+Kaggle Public 分开记录，未完成实验保留状态。早期 SFT 与历史全部中间节点见
+[SFT 汇总](reports/sft/README.md)和[截至 10-28 的历史总表](reports/rl/all_experiments_summary_20261028.md)。
+
 ## SFT 最终交付版本（v4 / sft-final）
 
 本组当前选定的 SFT 交付方案是 `qlora_sft_v4_resample2x`，代码版本由
@@ -140,8 +151,9 @@ Baseline 原始指标位于 `output/baseline/`；详细设置与来源见
 本轮固定证据补漏（C1）保留其全部情感及 104 条已有 yes，新增 106 条 yes；经用户
 批准的一次真实 Kaggle 提交得到 Public **0.90175**，比基线低 **0.02138**，因此保留
 `submission_09.csv` 的 **0.92313**。小特征校准对照（C2）因自然冲突召回下降而未通过
-预设分组评估门槛，没有测试集推理或 Kaggle 提交。下一步视觉专家实验尚待检验，
-不能声称已有提分。固定补漏的执行入口与验收见
+预设分组评估门槛，没有测试集推理或 Kaggle 提交。后续冻结视觉专家与可训练融合模型
+的结果已补充到[实验说明](reports/EXPERIMENTS.md)，其中分支收益与完整系统结果分别记录。
+固定补漏的执行入口与验收见
 [补漏说明](scripts/EVIDENCE_SUPPLEMENT.md)，文件差异及成绩边界见
 [新基线审计](reports/rl/evidence_supplement_audit_20261025.md)。
 
