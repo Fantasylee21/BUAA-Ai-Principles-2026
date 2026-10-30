@@ -31,9 +31,14 @@ S2 RL 的奖励、固定实验配置、显卡切换、tmux 启动与断点恢复
 8B 视觉专家、联合情感模型和 7B E/U 分离方案，并列出入口、设置、结果、证据和复现依赖。
 
 截至本地已归档证据，多数后续方法尚未取得稳定的完整系统收益；冻结 8B 证据有分支收益，
-A/B/C 冲突奖励首折未晋级，7B 方案仅有预检与准入快照。各数据划分的本地分数和
+A/B/C 冲突奖励首折未晋级，7B 冻结专家评估也未通过留出门槛，正式 SFT/RL 未启动。各数据划分的本地分数和
 Kaggle Public 分开记录，未完成实验保留状态。早期 SFT 与历史全部中间节点见
 [SFT 汇总](reports/sft/README.md)和[截至 10-28 的历史总表](reports/rl/all_experiments_summary_20261028.md)。
+
+模型的版本、方法、结果和加载方式统一见[模型下载与使用说明](reports/models/README.md)。
+权重另存团队私有 [Hugging Face 实验模型仓库](https://huggingface.co/BUAA-AI/xzb-affect-experiments)，
+Git 只保存说明、来源与校验清单。使用 `python scripts/model_artifacts.py list` 查看版本，
+`python scripts/model_artifacts.py download 模型ID` 下载并校验对应模型及其依赖。
 
 ## SFT 最终交付版本（v4 / sft-final）
 
