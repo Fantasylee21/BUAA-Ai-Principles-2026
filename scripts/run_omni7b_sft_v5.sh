@@ -10,6 +10,9 @@ EVAL_GPU_ID="${EVAL_GPU_ID:-${GPU_ID%%,*}}"
 SOURCE_DIR="${SOURCE_DIR:-data/llamafactory/generated}"
 RUN_NAME="qwen25omni_7b_v5_test"
 SUBMIT_PATH="${SUBMIT_PATH:-$ROOT/submit.csv}"
+TRAIN_OUTPUT="output/sft/qwen25omni/qlora_sft_v5_targeted_7b"
+# PEFT otherwise probes a derived Hub ID while saving this local adapter.
+export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 PYTHON_RUNNER=(python)
 if [[ -n "${CONDA_ENV:-}" ]]; then
     PYTHON_RUNNER=(conda run --no-capture-output -n "$CONDA_ENV" python)
@@ -29,7 +32,18 @@ if [[ "$STAGE" == train || "$STAGE" == all ]]; then
     [[ -s data/llamafactory/generated/omni_v5_targeted/dataset_info.json ]] || {
         echo 'Missing v5 data. Run STAGE=prepare first.' >&2; exit 1;
     }
-    bash scripts/run_sft_training.sh qlora "$CONFIG" "$GPU_ID"
+    FINISHED_CHECKPOINT=0
+    for CHECKPOINT in "$TRAIN_OUTPUT"/checkpoint-*; do
+        if [[ -s "$CHECKPOINT/adapter_model.safetensors" ]]; then
+            FINISHED_CHECKPOINT=1
+            break
+        fi
+    done
+    if [[ -s "$TRAIN_OUTPUT/train_results.json" && "$FINISHED_CHECKPOINT" == 1 ]]; then
+        echo "Training already completed in $TRAIN_OUTPUT; continuing to evaluation."
+    else
+        bash scripts/run_sft_training.sh qlora "$CONFIG" "$GPU_ID"
+    fi
 fi
 
 if [[ "$STAGE" == evaluate || "$STAGE" == all ]]; then
@@ -39,7 +53,7 @@ if [[ "$STAGE" == evaluate || "$STAGE" == all ]]; then
 fi
 
 if [[ "$STAGE" == submit || "$STAGE" == all ]]; then
-    SELECTION="output/sft/qwen25omni/qlora_sft_v5_targeted_7b/best_checkpoint.json"
+    SELECTION="$TRAIN_OUTPUT/best_checkpoint.json"
     [[ -s "$SELECTION" ]] || {
         echo "Missing $SELECTION. Run STAGE=evaluate first." >&2; exit 1;
     }

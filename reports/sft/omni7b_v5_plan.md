@@ -56,3 +56,9 @@ checkout. The selected adapter and metrics are saved under
 `output/sft/qwen25omni/qlora_sft_v5_targeted_7b/` and
 `output/sft/evaluation/`. `STAGE=submit` expects an existing
 `best_checkpoint.json` from `STAGE=evaluate`.
+
+The launcher sets Hugging Face, Datasets, and Transformers offline mode because
+the base checkpoint and training data are local. PEFT may otherwise probe the
+derived `Qwen2.5-Omni-7B/thinker` Hub ID while saving an adapter. If training
+already has `train_results.json` and saved epoch adapters, rerunning
+`STAGE=all` skips training and continues with validation and submission.
