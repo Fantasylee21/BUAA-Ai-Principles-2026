@@ -47,6 +47,13 @@ CONDA_ENV=llama-factory STAGE=evaluate EVAL_GPU_ID=4 bash scripts/run_omni7b_sft
 CONDA_ENV=llama-factory STAGE=submit EVAL_GPU_ID=4 bash scripts/run_omni7b_sft_v5.sh
 ```
 
+After training has already completed, run `STAGE=finish` to perform validation
+selection and submission without touching training or prepared data:
+
+```bash
+CONDA_ENV=llama-factory STAGE=finish EVAL_GPU_ID=4 bash scripts/run_omni7b_sft_v5.sh
+```
+
 `STAGE=all` runs those stages in order and writes `submit.csv` at the repository
 root. It chooses the highest scoring validation checkpoint, runs full test
 inference, checks all 734 IDs and output fields, then writes the CSV. Set

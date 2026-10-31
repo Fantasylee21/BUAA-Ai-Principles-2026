@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="configs/sft/qwen25omni/qlora_sft_v5_targeted_7b.yaml"
-STAGE="${STAGE:-all}" # prepare | train | evaluate | submit | all
+STAGE="${STAGE:-all}" # prepare | train | evaluate | submit | finish | all
 GPU_ID="${GPU_ID:-4,5}"
 EVAL_GPU_ID="${EVAL_GPU_ID:-${GPU_ID%%,*}}"
 SOURCE_DIR="${SOURCE_DIR:-data/llamafactory/generated}"
@@ -20,8 +20,8 @@ fi
 cd "$ROOT"
 
 case "$STAGE" in
-    prepare|train|evaluate|submit|all) ;;
-    *) echo "STAGE must be prepare, train, evaluate, submit, or all" >&2; exit 2 ;;
+    prepare|train|evaluate|submit|finish|all) ;;
+    *) echo "STAGE must be prepare, train, evaluate, submit, finish, or all" >&2; exit 2 ;;
 esac
 
 if [[ "$STAGE" == prepare || "$STAGE" == all ]]; then
@@ -46,13 +46,13 @@ if [[ "$STAGE" == train || "$STAGE" == all ]]; then
     fi
 fi
 
-if [[ "$STAGE" == evaluate || "$STAGE" == all ]]; then
+if [[ "$STAGE" == evaluate || "$STAGE" == finish || "$STAGE" == all ]]; then
     # Select only by the complete official validation score; no test labels are used.
     CUDA_VISIBLE_DEVICES="$EVAL_GPU_ID" "${PYTHON_RUNNER[@]}" scripts/select_sft_checkpoint.py \
         --config "$CONFIG"
 fi
 
-if [[ "$STAGE" == submit || "$STAGE" == all ]]; then
+if [[ "$STAGE" == submit || "$STAGE" == finish || "$STAGE" == all ]]; then
     SELECTION="$TRAIN_OUTPUT/best_checkpoint.json"
     [[ -s "$SELECTION" ]] || {
         echo "Missing $SELECTION. Run STAGE=evaluate first." >&2; exit 1;
