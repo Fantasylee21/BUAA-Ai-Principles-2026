@@ -1,0 +1,149 @@
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================================================
+# VS Code
+# ============================================================
+.vscode/*
+
+# 保留团队共享配置时可取消下面这些注释
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+
+*.code-workspace
+
+# ============================================================
+# AI Coding Agents / Agent State
+# ============================================================
+
+# OpenAI Codex
+.codex/
+.codex-*/
+
+# Claude Code
+.claude/
+.claude-*/
+
+# Cursor
+.cursor/
+.cursor-*/
+
+# Windsurf
+.windsurf/
+
+# Continue
+.continue/
+
+# Cline / Roo Code
+.cline/
+.roo/
+
+# Aider
+.aider*
+.aider/
+
+# Agent-generated local memory / plans / state
+.agent/
+.agents/
+.ai/
+.ai-cache/
+.agent-cache/
+.agent-state/
+.agent-memory/
+.memory/
+
+# Temporary prompts / conversations / traces
+*.prompt.local
+*.agent.local
+*.trace
+*.trace.json
+*.conversation.json
+*.session.json
+
+# MCP local configuration
+.mcp.local.json
+mcp.local.json
+
+# ============================================================
+# Secrets / Environment Variables
+# ============================================================
+.env
+.env.*
+!.env.example
+!.env.template
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+credentials.json
+se
+
+# 本地保存的项目数据集、模型、输出和日志文件夹
+/Dataset
+/Dataset.zip
+/qlora_sft_v4_resample2x.7z
+/models
+/__pycache__
+
+# ============================================================
+# Python caches
+# ============================================================
+**/__pycache__/
+*.py[cod]
+
+# ============================================================
+# External training framework checkout
+# ============================================================
+/third_party/LlamaFactory
+
+# ============================================================
+# SFT generated data, checkpoints, and experiment logs
+# ============================================================
+/data/llamafactory/generated/
+/data/cleaned/protocol_consistent/
+/output/sft/*
+/output/val_merged_model
+!/output/sft/evaluation/
+!/output/sft/evaluation/**
+/checkpoints/
+/runs/
+/wandb/
+
+# ============================================================
+# Project-local temporary files
+# ============================================================
+/tmp/
+
+# Local RL environments and newly generated experiment artifacts.
+.venv*/
+**/.pytest_cache/
+**/.ipynb_checkpoints/
+/rl/output/*
+
+# Contributor workspace: local data, exports and weights.
+/data/cleaned/
+/rl/data/
+/rl/output/
+/videos
+/output/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.zip
+*.7z
+
+# These are source files, despite the team-wide *checkpoint* rule.
+!rl/test_checkpoint_runtime.py
+!scripts/select_sft_checkpoint.py
+!tests/test_checkpoint_selection.py
