@@ -1,414 +1,437 @@
-#!/usr/bin/env python3
-"""Single-GPU Omni Dr.GRPO runner with explicit video/audio probability paths.
+"""GRPO training script skeleton for the RL post-training stage.
 
-Run as python -m rl.train_grpo. Heavy dependencies are imported only after
---dry-run. See rl/README.md for the distinction from generic TRL GRPOTrainer.
+Post-trains Qwen2.5-Omni-3B (with an existing SFT LoRA adapter) for emotion
+recognition with uncertainty expression, using TRL's GRPOTrainer + PEFT.
+
+Heavy dependencies (torch / transformers / peft / trl) are imported lazily
+inside ``main()`` so that ``python rl/train_grpo.py --help`` and
+``--dry-run`` work on machines without a GPU stack installed.
+
+Usage:
+    python rl/train_grpo.py --help
+    python rl/train_grpo.py --dry-run --data rl/data/rl_prompts.jsonl
+    python rl/train_grpo.py --model-path <base> --sft-adapter-path <adapter> \
+        --data rl/data/rl_prompts.jsonl --output-dir runs/grpo_full \
+        --curriculum-phase full
 """
-from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
-import random
-import signal
 import sys
-import time
-import traceback
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    __package__ = "rl"
+# Make sibling modules (reward.py) importable regardless of the cwd the
+# script is launched from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from .experiment import (ROOT, BalancedSampler, artifact_hash, check_disjoint,
-                         fingerprint, group_advantages, load_records, read_config,
-                         validate_config, write_json)
-from .metrics import evaluation_report, prediction_record, promotion_decision
-from .reward import FrozenF1Reference, RewardEngine
-from .state import (adapter_digest, capture_rng, code_identity, restore_rng,
-                    save_checkpoint, software_versions, validate_checkpoint,
-                    validate_f1_cache, validate_run_directory)
+from reward import (  # noqa: E402  (pure-python module, safe at top level)
+    build_reward_funcs,
+    reward_weights_for_phase,
+)
 
-_ACTIVE_RUN_DIR = None
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT / "configs/rl/correctness_v1.json")
-    parser.add_argument("--mode", choices=("train", "smoke", "evaluate", "cache"), default="train")
-    parser.add_argument("--data-root", type=Path, default=ROOT / "Dataset")
-    parser.add_argument("--data", type=Path, help="Original train.jsonl or exact duplicate legacy prompts")
-    parser.add_argument("--val-file", type=Path)
-    parser.add_argument("--test-file", type=Path)
-    parser.add_argument("--model-path", type=Path, required=True)
-    parser.add_argument("--sft-adapter-path", type=Path, required=True)
-    parser.add_argument("--policy-path", type=Path, help="Trained adapter for evaluate only")
-    parser.add_argument("--run-dir", "--output-dir", type=Path, required=True)
-    parser.add_argument("--resume-from-checkpoint", type=Path)
-    parser.add_argument("--f1-cache", type=Path)
-    parser.add_argument("--gpu", help="Physical GPU index/UUID or auto; changes execution only")
-    parser.add_argument("--micro-batch-size", type=int, choices=(1, 2, 4))
-    parser.add_argument("--max-runtime-hours", type=float)
-    parser.add_argument("--split", choices=("val", "test"), default="val")
-    parser.add_argument("--smoke-updates", type=int, default=10)
-    parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args(argv)
+# Frame sampling is configured on the processor's video_processor right
+# after loading (see main()): fps=2.0 + do_sample_frames=True, matching the
+# SFT evaluation conditions in scripts/evaluate_sft.py. Bounding the visual
+# token count is critical for GRPO where every prompt is expanded into
+# `num_generations` completions — with the shipped processor defaults (no
+# sampling at all) a single prompt measured ~77k tokens on the server.
+MAX_FRAMES = 8  # kept for reference/ablation; not wired in (fps sampling is)
 
 
-def resolved(path):
-    return (path if path.is_absolute() else ROOT / path).resolve()
+def freeze_by_name_substring(model, substrings):
+    """Freeze every parameter whose qualified name contains any substring.
+
+    For Qwen2.5-Omni the frozen parts are the vision tower, the audio tower
+    and their projectors — only the language model's LoRA adapter should
+    train. To discover the exact module names on your checkpoint, run:
+
+        python -c "from transformers import AutoModelForImageTextToText; \\
+            m = AutoModelForImageTextToText.from_pretrained('<path>'); \\
+            [print(n) for n, _ in m.named_parameters()]" | sort -u | less
+
+    and adjust the substrings accordingly (typical matches contain
+    "visual", "audio" / "audio_tower", and "projector" / "multi_modal_projector").
+    Returns the number of frozen parameters.
+    """
+    n_frozen = 0
+    for name, param in model.named_parameters():
+        if any(sub in name for sub in substrings):
+            param.requires_grad = False
+            n_frozen += 1
+    return n_frozen
 
 
-def append_jsonl(path, record):
-    with Path(path).open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="GRPO RL stage for emotion recognition with uncertainty."
+    )
+    parser.add_argument("--model-path", default="Qwen/Qwen2.5-Omni-3B",
+                        help="Base model path or HF id (Qwen2.5-Omni-3B).")
+    parser.add_argument("--sft-adapter-path", default=None,
+                        help="Path to the existing SFT LoRA adapter to continue "
+                             "training from.")
+    parser.add_argument("--data", default="rl/data/rl_prompts.jsonl",
+                        help="RL prompt JSONL produced by prepare_rl_data.py.")
+    parser.add_argument("--output-dir", default="runs/grpo",
+                        help="Checkpoint / log output directory.")
+    parser.add_argument("--curriculum-phase", choices=["warmup", "full"],
+                        default="warmup",
+                        help="warmup = format+emotion rewards only (~first 30%% "
+                             "of training); full = all four components. Switch "
+                             "phases by restarting with this flag and resuming "
+                             "from the previous checkpoint.")
+    parser.add_argument("--use-vllm", action="store_true",
+                        help="Use vLLM colocate generation for rollouts "
+                             "(~10x faster than HF generate) — requires the "
+                             "vllm package. Default off: HF generate works "
+                             "everywhere, use this for the full run.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Load data, print one batch-shaped sample, and exit "
+                             "before model/trainer initialization.")
+    # Common hyperparameters (GRPOConfig defaults below carry the rationale).
+    parser.add_argument("--learning-rate", type=float, default=1e-5,
+                        help="LoRA learning rate (default: 1e-5).")
+    parser.add_argument("--num-generations", type=int, default=8,
+                        help="Completions sampled per prompt (default: 8).")
+    parser.add_argument("--beta", type=float, default=0.01,
+                        help="KL coefficient to the SFT reference policy "
+                             "(default: 0.01).")
+    parser.add_argument("--max-completion-length", type=int, default=128,
+                        help="Max new tokens per completion (default: 128; the "
+                             "output contract is tiny).")
+    parser.add_argument("--max-prompt-length", type=int, default=None,
+                        help="Optional prompt truncation length (tokens).")
+    parser.add_argument("--num-train-epochs", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
 
 
-def evaluate(policy, records, data_root, destination, *, adapter="policy", labelled=True):
-    """One common greedy inference path for SFT baseline and RL candidates."""
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_suffix(".partial.jsonl")
-    if partial.exists():
-        # Previous incomplete evaluation is kept as a diagnostic; do not append to it.
-        partial = destination.with_name(destination.stem + f".{time.time_ns()}.partial.jsonl")
-    rng = capture_rng(policy.torch)
-    predictions = []
-    try:
-        for index, row in enumerate(records, 1):
-            inputs = policy.prepare(row, data_root)
-            tokens, completion = policy.generate(inputs, adapter=adapter)
-            record = prediction_record(row, completion)
-            record["completion_tokens"] = tokens.numel()
-            append_jsonl(partial, record)
-            predictions.append(record)
-            del inputs, tokens
-            if index % 25 == 0:
-                print(f"evaluation {index}/{len(records)}", flush=True)
-    finally:
-        restore_rng(policy.torch, rng)
-    partial.replace(destination)
-    if labelled:
-        metrics = evaluation_report(predictions)
-        write_json(destination.with_suffix(".metrics.json"), metrics)
-        return metrics
-    return predictions
+def load_prompt_dataset(path):
+    """Load the RL prompt JSONL into a list of dicts.
+
+    Each row keeps its extra columns (gt_label, sample_type) — TRL forwards
+    them to the reward functions via **kwargs.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh if line.strip()]
+    if not rows:
+        raise ValueError(f"No rows found in {path}")
+    return rows
 
 
-def smoke_media_checks(policy, records, data_root):
-    """Check real media influence and identical initial reference logits."""
-    torch = policy.torch
-    for protocol in ("VT", "VA"):
-        rows = [row for row in records if row["protocol"] == protocol]
-        if not rows:
-            raise ValueError(f"Smoke requires {protocol} examples")
-        # Probe durations once to include the longest training input of each protocol.
-        import subprocess
-        durations = {}
-        for row in rows:
-            video = row["video"]
-            if video not in durations:
-                value = subprocess.check_output([
-                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1", str(Path(data_root) / video)], text=True)
-                durations[video] = float(value.strip())
-        row = max(rows, key=lambda r: durations[r["video"]])
-        prefix = policy.prepare(row, data_root)
-        tokens, _ = policy.generate(prefix)
-        from .omni_runtime import batch_for_completions
-        inputs, ids, _ = batch_for_completions(torch, prefix, [tokens], policy.pad_id)
-        policy.model.eval()
-        with torch.no_grad():
-            with policy.adapter("policy"):
-                initial = policy.log_probabilities(inputs, ids)
-            with policy.adapter("reference"):
-                reference = policy.log_probabilities(inputs, ids)
-            if not torch.allclose(initial, reference, atol=2e-4, rtol=1e-4):
-                raise RuntimeError("Initial policy/reference token probabilities differ")
-            for key in (("pixel_values_videos", "input_features") if protocol == "VA" else ("pixel_values_videos",)):
-                altered = dict(inputs)
-                altered[key] = torch.zeros_like(inputs[key])
-                changed = policy.log_probabilities(altered, ids)
-                if torch.allclose(initial, changed, atol=1e-8, rtol=0):
-                    raise RuntimeError(f"No measurable {key} influence in {protocol} probability path")
-        print(f"media path verified: {protocol}, duration={durations[row['video']]:.2f}s", flush=True)
+def main():
+    args = parse_args()
 
+    rows = load_prompt_dataset(args.data)
+    print(f"Loaded {len(rows)} RL prompts from {args.data}")
 
-def main(argv=None):
-    global _ACTIVE_RUN_DIR
-    _ACTIVE_RUN_DIR = None
-    args = parse_args(argv)
-    for name, value in vars(args).items():
-        if isinstance(value, Path):
-            setattr(args, name, resolved(value))
-    settings, runtime = read_config(args.config)
-    for key in ("gpu", "micro_batch_size", "max_runtime_hours"):
-        value = getattr(args, key)
-        if value is not None:
-            runtime[key] = value
-    validate_config(settings, runtime)
-    if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        raise ValueError("This runner is single-GPU; launch each independent experiment separately")
-    if args.policy_path and args.mode != "evaluate":
-        raise ValueError("--policy-path is for evaluate only; training starts from SFT or an explicit resume")
-    if args.resume_from_checkpoint and args.mode not in ("train", "smoke"):
-        raise ValueError("Checkpoint resume is only for train/smoke")
-    if args.split == "test" and args.mode != "evaluate":
-        raise ValueError("Test inputs cannot be used for training, reward caching or model selection")
-    if args.smoke_updates < 1:
-        raise ValueError("smoke-updates must be positive")
-    train, duplicates, val = [], 0, []
-    if args.mode in ("train", "smoke", "cache"):
-        train, duplicates = load_records(args.data or args.data_root / "train.jsonl")
-        BalancedSampler(train, settings["seed"], settings["prompts_per_update"])
-    if args.mode in ("train", "smoke") or (args.mode == "evaluate" and args.split == "val"):
-        val, val_duplicates = load_records(args.val_file or args.data_root / "val.jsonl")
-        if val_duplicates:
-            raise ValueError("Official validation must not contain repeated IDs")
-        if train:
-            check_disjoint(train, val)
-        if len(val) != 666:
-            raise ValueError("Full official validation must contain exactly 666 unique samples")
-    test = []
-    if args.mode == "evaluate" and args.split == "test":
-        test, repeated = load_records(args.test_file or args.data_root / "test_release.jsonl", require_labels=False)
-        if repeated or len(test) != 734:
-            raise ValueError("Official test input must contain exactly 734 unique samples")
     if args.dry_run:
-        print(json.dumps({"experiment": settings, "runtime": runtime,
-                          "unique_train": len(train), "ignored_exact_duplicates": duplicates,
-                          "validation": len(val), "test": len(test),
-                          "completions_per_update": settings["prompts_per_update"] * settings["num_generations"],
-                          "software": software_versions()}, ensure_ascii=False, indent=2))
+        # Print one batch-shaped sample and exit before touching torch/trl.
+        sample = rows[0]
+        print("--- dry run: sample row ---")
+        print(f"sample_id   : {sample['sample_id']}")
+        print(f"sample_type : {sample['sample_type']}")
+        print(f"gt_label    : {sample['gt_label']}")
+        print(f"prompt roles: {[m['role'] for m in sample['prompt']]}")
+        content_types = [c['type'] for c in sample['prompt'][0]['content']]
+        print(f"content types: {content_types}")
+        text_part = next(
+            c['text'] for c in sample['prompt'][0]['content'] if c['type'] == 'text'
+        )
+        print(f"instruction (first 200 chars): {text_part[:200]!r}")
+        print(f"curriculum_phase: {args.curriculum_phase} -> reward funcs: "
+              f"{[f.__name__ for f in build_reward_funcs(args.curriculum_phase)]}")
+        print("dry run OK; exiting before trainer init.")
         return
-    if args.run_dir.exists() and any(args.run_dir.iterdir()) and not args.resume_from_checkpoint:
-        raise ValueError("Run directory is nonempty: use a new run-dir or an explicit checkpoint resume")
-    args.run_dir.mkdir(parents=True, exist_ok=True)
-    from .omni_runtime import OmniPolicy, select_gpu
-    gpu = select_gpu(runtime["gpu"], runtime["min_free_memory_gib"])
-    code = code_identity()
-    base_hash = artifact_hash(args.model_path)
-    sft_hash = artifact_hash(args.sft_adapter_path, adapter=True)
-    input_keys = ("video_fps", "video_min_frames", "video_max_frames", "video_pixels", "audio_sampling_rate",
-                  "max_prompt_tokens", "max_completion_length", "attn_implementation")
-    baseline_identity = {"train": fingerprint(train), "base": base_hash, "sft": sft_hash,
-                         "inputs": {k: settings[k] for k in input_keys}, "source": code["source_hash"]}
-    f1_reference, cache_hash = None, None
-    if settings["reward_version"] == "f1_delta_v1" and args.mode in ("train", "smoke"):
-        if args.f1_cache is None:
-            raise ValueError("f1_delta_v1 needs --f1-cache generated by --mode cache")
-        cache = json.loads(args.f1_cache.read_text(encoding="utf-8"))
-        validate_f1_cache(cache, baseline_identity)
-        f1_reference = FrozenF1Reference(train, cache["predictions"])
-        cache_hash = fingerprint(cache)
-    import numpy as np
-    import torch
-    from transformers import get_cosine_schedule_with_warmup
-    from trl import GRPOConfig
-    software = software_versions()
-    identity = {"schema": "omni_dr_grpo_v1", "mode": args.mode, "experiment": settings,
-                "baseline": baseline_identity, "validation": fingerprint(val),
-                "evaluation_policy": (artifact_hash(args.policy_path, adapter=True)
-                                      if args.policy_path else sft_hash) if args.mode == "evaluate" else None,
-                "f1_cache": cache_hash, "software": {k: v for k, v in software.items()
-                                                     if k not in ("platform", "python")}}
-    marker = validate_checkpoint(args.resume_from_checkpoint, identity) if args.resume_from_checkpoint else None
-    validate_run_directory(args.run_dir, identity, marker)
-    _ACTIVE_RUN_DIR = args.run_dir
-    write_json(args.run_dir / "status.json", {"status": "initializing", "mode": args.mode,
-               "completed_steps": marker["completed_steps"] if marker else 0})
-    policy_path = args.resume_from_checkpoint / "adapter/policy" if marker else args.policy_path
-    random.seed(settings["seed"])
-    np.random.seed(settings["seed"])
-    torch.manual_seed(settings["seed"])
-    torch.cuda.manual_seed_all(settings["seed"])
-    manifest = {"identity": identity, "runtime": runtime, "gpu": gpu,
-                "software": software, "code": code, "ignored_exact_duplicates": duplicates,
-                "inference_adapter": str(args.policy_path or args.sft_adapter_path),
-                "note": "Dedicated one-iteration Dr.GRPO loop with TRL GRPOConfig; not generic GRPOTrainer"}
-    write_json(args.run_dir / f"manifest-{time.time_ns()}.json", manifest)
-    policy = OmniPolicy(args.model_path, args.sft_adapter_path, settings, policy_path=policy_path,
-                        training=args.mode in ("train", "smoke"))
-    if args.mode == "evaluate":
-        output = args.run_dir / (args.split + "_predictions.jsonl")
-        evaluate(policy, val if args.split == "val" else test, args.data_root,
-                 output, labelled=args.split == "val")
-        if args.split == "test":
-            import subprocess
-            subprocess.run([sys.executable, str(ROOT / "rl/make_submission.py"), "--strict",
-                            "--input", str(output), "--test-file",
-                            str(args.test_file or args.data_root / "test_release.jsonl"),
-                            "--output", str(args.run_dir / "submission.csv")], check=True)
-        write_json(args.run_dir / "status.json", {"status": "complete", "mode": args.mode})
-        return
-    if args.mode == "cache":
-        output = args.run_dir / "train_predictions.jsonl"
-        evaluate(policy, train, args.data_root, output, adapter="reference")
-        predictions = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
-        write_json(args.run_dir / "f1_cache.json", {"schema": "train_f1_cache_v1", "split": "train",
-                   "baseline_identity": baseline_identity,
-                   "predictions": {r["sample_id"]: r["pred_emotion"] for r in predictions}})
-        write_json(args.run_dir / "status.json", {"status": "complete", "mode": args.mode})
-        return
-    # Use TRL's public configuration contract. No silent unsupported-option filtering.
-    grpo_config = GRPOConfig(
-        output_dir=str(args.run_dir), num_generations=settings["num_generations"],
-        per_device_train_batch_size=runtime["micro_batch_size"],
-        gradient_accumulation_steps=settings["prompts_per_update"] * settings["num_generations"] // runtime["micro_batch_size"],
-        max_steps=settings["max_steps"], max_completion_length=settings["max_completion_length"],
-        learning_rate=settings["learning_rate"], beta=settings["beta"],
-        scale_rewards="none", loss_type="dr_grpo", num_iterations=1,
-        temperature=1.0, top_p=1.0, top_k=0, bf16=True, use_vllm=False,
-        gradient_checkpointing=True, report_to="none", seed=settings["seed"])
-    if grpo_config.num_iterations != 1:
-        raise ValueError("Only fresh, one-iteration on-policy updates are supported")
-    engine = RewardEngine.from_records(train, version=settings["reward_version"], f1_reference=f1_reference)
-    sampler = BalancedSampler(train, settings["seed"], settings["prompts_per_update"])
-    parameters = [p for p in policy.model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(parameters, lr=settings["learning_rate"], weight_decay=0.0)
-    scheduler = get_cosine_schedule_with_warmup(optimizer, settings["warmup_steps"], settings["max_steps"])
-    completed = 0
-    if marker:
-        # Only load checkpoints that passed the file manifest verification above.
-        state = torch.load(args.resume_from_checkpoint / "training_state.pt", map_location="cpu", weights_only=False)
-        completed = state["completed_steps"]
-        if completed != marker["completed_steps"]:
-            raise ValueError("Checkpoint marker and optimizer state disagree")
-        optimizer.load_state_dict(state["optimizer"])
-        scheduler.load_state_dict(state["scheduler"])
-        restore_rng(torch, state["rng"])
-        if adapter_digest(policy, "reference") != marker["reference_digest"]:
-            raise ValueError("SFT reference differs after reload")
-        if adapter_digest(policy, "policy") != marker["policy_digest"]:
-            raise ValueError("Policy differs after reload")
-    elif adapter_digest(policy, "reference") != adapter_digest(policy, "policy"):
-        raise RuntimeError("Training did not initialize from the supplied SFT adapter")
-    reference_digest = adapter_digest(policy, "reference")
-    baseline_path = args.run_dir / "baseline.metrics.json"
-    baseline = None
-    if args.mode == "smoke" and not marker:
-        smoke_media_checks(policy, train, args.data_root)
-    if args.mode == "train":
-        if baseline_path.exists():
-            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        else:
-            baseline = evaluate(policy, val, args.data_root, args.run_dir / "baseline.jsonl", adapter="reference")
-    if not marker:
-        save_checkpoint(args.run_dir, policy, optimizer, scheduler, completed, identity)
-    stop_requested = []
-    def stop_at_boundary(signum, frame):
-        stop_requested.append(signum)
-        print("Stop requested; finishing the current optimizer update before saving.", flush=True)
-    previous_handlers = {sig: signal.signal(sig, stop_at_boundary) for sig in (signal.SIGINT, signal.SIGTERM)}
-    started = time.monotonic()
-    target = min(settings["max_steps"], args.smoke_updates) if args.mode == "smoke" else settings["max_steps"]
 
-    def evaluate_checkpoint(step):
-        destination = args.run_dir / f"evaluation/step-{step:06d}.jsonl"
-        metrics_path = destination.with_suffix(".metrics.json")
-        metrics = (json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists()
-                   else evaluate(policy, val, args.data_root, destination))
-        decision = promotion_decision(baseline, metrics)
-        write_json(destination.with_suffix(".selection.json"), decision)
-        if decision["promote"]:
-            best_path = args.run_dir / "best_checkpoint.json"
-            best = json.loads(best_path.read_text(encoding="utf-8")) if best_path.exists() else None
-            if best is None or metrics["score"] > best["metrics"]["score"]:
-                write_json(best_path, {"checkpoint": f"checkpoint-{step:06d}",
-                                      "adapter": f"checkpoint-{step:06d}/adapter/policy", "metrics": metrics})
-
+    # ------------------------------------------------------------------
+    # Lazy heavy imports: torch / transformers / peft / trl may be absent
+    # on dev machines (e.g. this Mac); fail with a friendly message.
+    # ------------------------------------------------------------------
     try:
-        if completed and args.mode == "train" and (completed % settings["eval_every"] == 0 or completed >= target):
-            evaluate_checkpoint(completed)
-        for step in range(completed, target):
-            update_started = time.monotonic()
-            optimizer.zero_grad(set_to_none=True)
-            totals = {"loss": 0.0, "kl": 0.0, "reward": 0.0, "valid_json": 0.0,
-                      "emotion": 0.0, "uncertainty": 0.0, "question_penalty": 0.0,
-                      "zero_advantage_groups": 0, "is_uncertain_yes_share": 0.0}
-            prompt_count, generations = settings["prompts_per_update"], settings["num_generations"]
-            for row in sampler.batch(step):
-                prefix = policy.prepare(row, args.data_root)
-                completions, scores, raw = [], [], []
-                for generation in range(generations):
-                    tokens, text = policy.generate(prefix, sample=True)
-                    score = engine.score(text, row["gt_label"], row["sample_type"], row["sample_id"])
-                    completions.append(tokens)
-                    scores.append(score)
-                    raw.append(text)
-                    append_jsonl(args.run_dir / "rollouts.jsonl", {
-                        "update": step+1, "sample_id": row["sample_id"], "generation": generation,
-                        "sample_type": row["sample_type"], "completion": text, "reward": score,
-                        "completion_tokens": tokens.numel(),
-                        "reached_token_limit": tokens.numel() >= settings["max_completion_length"]})
-                advantages = group_advantages([s["total"] for s in scores])
-                totals["zero_advantage_groups"] += int(max(advantages) - min(advantages) < 1e-12)
-                losses = policy.backward_group(prefix, completions, advantages, runtime["micro_batch_size"])
-                totals["loss"] += losses["loss"]
-                totals["kl"] += losses["kl"] / prompt_count
-                for score, text in zip(scores, raw):
-                    totals["reward"] += score["total"] / (prompt_count * generations)
-                    for key in ("valid_json", "emotion", "uncertainty", "question_penalty"):
-                        totals[key] += score[key] / (prompt_count * generations)
-                    parsed = prediction_record(row, text)
-                    totals["is_uncertain_yes_share"] += (parsed["is_uncertain"] == "yes") / (prompt_count * generations)
-                del prefix, completions, scores
-            norm = torch.nn.utils.clip_grad_norm_(parameters, settings["max_grad_norm"], error_if_nonfinite=True)
-            optimizer.step()
-            scheduler.step()
-            completed = step + 1
-            record = {"step": completed, **totals, "grad_norm": float(norm),
-                      "fraction_zero_advantage_groups": totals["zero_advantage_groups"] / prompt_count,
-                      "learning_rate": scheduler.get_last_lr()[0],
-                      "seconds": time.monotonic() - update_started,
-                      "peak_allocated_mib": torch.cuda.max_memory_allocated() / 2**20,
-                      "peak_reserved_mib": torch.cuda.max_memory_reserved() / 2**20}
-            append_jsonl(args.run_dir / "training.jsonl", record)
-            write_json(args.run_dir / "status.json", {"status": "running", **record})
-            print(json.dumps(record), flush=True)
-            deadline = runtime["max_runtime_hours"]
-            timed_out = deadline is not None and time.monotonic() - started >= deadline * 3600
-            save = completed % settings["save_every"] == 0 or completed == target or stop_requested or timed_out
-            evaluate_now = args.mode == "train" and (completed % settings["eval_every"] == 0 or completed == target)
-            if save or evaluate_now:
-                if adapter_digest(policy, "reference") != reference_digest:
-                    raise RuntimeError("Frozen SFT reference changed")
-                save_checkpoint(args.run_dir, policy, optimizer, scheduler, completed, identity)
-            if evaluate_now and not (stop_requested or timed_out):
-                evaluate_checkpoint(completed)
-            if stop_requested or timed_out:
-                break
-        if args.mode == "smoke" and completed >= target:
-            if adapter_digest(policy, "policy") == reference_digest:
-                raise RuntimeError("Smoke produced no policy update; inspect reward diversity and gradients")
-        evaluation_pending = args.mode == "train" and completed >= target and not (
-            args.run_dir / f"evaluation/step-{completed:06d}.metrics.json").exists()
-        write_json(args.run_dir / "status.json", {"status": "complete" if completed >= target and not evaluation_pending else "stopped",
-                   "completed_steps": completed, "target_steps": target,
-                   "note": "No eligible checkpoint means SFT remains the selected model"})
-    except BaseException as exc:
-        write_json(args.run_dir / "status.json", {"status": "failed", "completed_steps": completed,
-                   "error": str(exc), "traceback": traceback.format_exc()})
-        raise
-    finally:
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+        import torch  # noqa: F401
+        from datasets import Dataset
+        from peft import PeftModel
+        from transformers import (
+            Qwen2_5OmniForConditionalGeneration,
+            Qwen2_5OmniProcessor,
+            TrainerCallback,
+        )
+        from trl import GRPOConfig, GRPOTrainer
+    except ImportError as exc:
+        raise SystemExit(
+            "Missing training dependency: "
+            f"{exc.name or exc}. The GRPO stage requires a GPU environment with "
+            "torch, transformers, datasets, peft and trl installed "
+            "(e.g. `pip install trl peft datasets transformers accelerate`). "
+            "Use --dry-run or --help to inspect this script without them."
+        )
 
-
-def entrypoint():
+    # ------------------------------------------------------------------
+    # PyAV compatibility shim.
+    # torchvision 0.21's read_video() calls av.open(..., metadata_errors=
+    # "ignore"), but PyAV >= 15 removed that kwarg — and the AutoDL pip
+    # mirror ships no prebuilt av<15 wheel for py3.12, so downgrading is
+    # not always possible. When the installed PyAV is >= 15, wrap av.open
+    # to drop the removed kwargs; torchvision looks the attribute up on the
+    # module at call time, so the patch takes effect. Dormant on av < 15.
+    # ------------------------------------------------------------------
+    import av as _av
     try:
-        main()
-    except Exception as exc:
-        if _ACTIVE_RUN_DIR is not None:
-            path = _ACTIVE_RUN_DIR / "status.json"
-            try:
-                status = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                status = {}
-            write_json(path, {**status, "status": "failed", "error": str(exc),
-                              "traceback": traceback.format_exc()})
-        raise
+        _av_major = int(str(_av.__version__).split(".")[0])
+    except (ValueError, IndexError):
+        _av_major = 0
+    if _av_major >= 15:
+        _orig_av_open = _av.open
+
+        def _av_open_compat(*a, **kw):
+            kw.pop("metadata_errors", None)
+            kw.pop("metadata_encoding", None)
+            return _orig_av_open(*a, **kw)
+
+        _av.open = _av_open_compat
+        print(
+            f"Note: PyAV {_av.__version__} >= 15 removed the metadata_errors/"
+            "metadata_encoding kwargs; patched av.open so torchvision video "
+            "decoding works. (Install av<15 from a mirror with wheels to make "
+            "this shim unnecessary.)"
+        )
+
+    # ------------------------------------------------------------------
+    # Model + processor
+    # ------------------------------------------------------------------
+    # Qwen2.5-Omni is a composite model: an outer container holding the
+    # "thinker" (text/vision/audio understanding) and the "talker" (speech
+    # synthesis, unused here). AutoModelForImageTextToText cannot resolve the
+    # composite Qwen2_5OmniConfig, so load via the dedicated classes,
+    # following the team's own scripts/evaluate_sft.py: disable the talker
+    # and train the thinker submodel (which is also what LLaMAFactory used
+    # as the PEFT base during SFT). If this TRL path proves fragile,
+    # ms-swift and NeMo-RL ship dedicated Qwen2.5-Omni GRPO recipes and are
+    # the planned fallback frameworks.
+    processor = Qwen2_5OmniProcessor.from_pretrained(args.model_path)
+
+    # --- frame sampling (CRITICAL) -----------------------------------------
+    # With the processor's shipped defaults (do_sample_frames=False, fps=None)
+    # the video processor decodes EVERY frame of each video — measured on the
+    # server: a single prompt ballooned to ~77k tokens. Configure instance
+    # defaults so preprocess() samples frames exactly like the SFT evaluation
+    # did (scripts/evaluate_sft.py: fps=2.0, do_sample_frames=True; the
+    # processor's own min_frames=4 / max_frames=768 bounds then apply).
+    _vp = processor.video_processor
+    _vp.do_sample_frames = True
+    _vp.fps = 2.0
+    print(
+        "Video frame sampling: "
+        f"do_sample_frames={_vp.do_sample_frames}, fps={_vp.fps}, "
+        f"min_frames={getattr(_vp, 'min_frames', None)}, "
+        f"max_frames={getattr(_vp, 'max_frames', None)}"
+    )
+
+    # --- Arrow None-key cleaner (CRITICAL for this model's chat template) ---
+    # Dataset.from_list stores the "prompt" column in Arrow, which UNIFIES the
+    # keys of the content-part dicts across a column: every text part gains a
+    # phantom "video": None and every video part gains "text": None (verified
+    # locally). This model's LLaMAFactory-exported chat template decides each
+    # block's type by key PRESENCE ('video' in content), so a polluted text
+    # part renders an EXTRA <|vision_bos|><|VIDEO|><|vision_eos|> — the batch
+    # then has twice as many <|VIDEO|> tokens as decoded videos, and the
+    # processor dies with StopIteration in replace_multimodal_special_tokens.
+    # Fix: strip None-valued keys from content parts before the template and
+    # the video collector see them. The StopIteration probe is kept as a
+    # safety net: if it ever fires again, it dumps the batch composition.
+    _orig_apply_chat_template = processor.apply_chat_template
+
+    def _cleaning_apply_chat_template(conversation, **kwargs):
+        def clean_conv(conv):
+            cleaned = []
+            for m in conv:
+                content = m.get("content")
+                if isinstance(content, list):
+                    content = [
+                        {k: v for k, v in p.items() if v is not None}
+                        if isinstance(p, dict) else p
+                        for p in content
+                    ]
+                cleaned.append({**m, "content": content})
+            return cleaned
+
+        is_batched = (
+            isinstance(conversation, (list, tuple))
+            and len(conversation) > 0
+            and isinstance(conversation[0], (list, tuple))
+        )
+        cleaned_conversation = (
+            [clean_conv(c) for c in conversation] if is_batched else clean_conv(conversation)
+        )
+        try:
+            return _orig_apply_chat_template(cleaned_conversation, **kwargs)
+        except StopIteration:
+            convs = cleaned_conversation if is_batched else [cleaned_conversation]
+            print(f"[probe] StopIteration STILL occurred: batch of {len(convs)} conversation(s):")
+            for i, conv in enumerate(convs[:8]):
+                parts = [
+                    part
+                    for m in conv
+                    for part in (m.get("content") or [])
+                    if isinstance(part, dict)
+                ]
+                print(f"[probe] conv {i}: parts={[p.get('type') for p in parts]} "
+                      f"keys={[sorted(p.keys()) for p in parts]}")
+            raise
+
+    processor.apply_chat_template = _cleaning_apply_chat_template
+
+    omni = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+        args.model_path,
+        dtype="bfloat16",
+        attn_implementation="sdpa",  # flash_attention_2 is faster but the
+                                     # flash-attn wheel is not installed here;
+                                     # sdpa is correct on A800, just slower
+    )
+    omni.disable_talker()  # text-only task: drop the speech-synthesis stack
+
+    if args.sft_adapter_path:
+        # Continue training the existing SFT LoRA adapter. It is mounted on
+        # the THINKER (the LLaMAFactory PEFT base), not the outer container —
+        # mounting on the container silently leaves every tensor unloaded
+        # (see scripts/evaluate_sft.py). Do NOT merge the adapter: beta>0
+        # keeps a frozen reference copy for the KL term via PEFT.
+        omni.thinker = PeftModel.from_pretrained(
+            omni.thinker, args.sft_adapter_path, is_trainable=True
+        )
+    else:
+        # No adapter: the HF team repo ships a MERGED SFT model, so start
+        # from it directly and add a fresh LoRA on the thinker, matching the
+        # SFT-stage hyperparameters (r=16, alpha=32, dropout=0.05).
+        from peft import LoraConfig, get_peft_model
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            target_modules="all-linear",
+            task_type="CAUSAL_LM",
+        )
+        omni.thinker = get_peft_model(omni.thinker, lora_config)
+    omni.thinker.print_trainable_parameters()
+    model = omni.thinker  # GRPO trains the thinker, exactly like SFT did
+
+    # Freeze vision tower / audio tower / projectors: GRPO should only move
+    # the language-model LoRA weights; the perception stacks were already
+    # aligned during SFT and moving them wastes memory and risks drift.
+    n_frozen = freeze_by_name_substring(model, ["visual", "audio", "projector"])
+    print(f"Froze {n_frozen} parameters (vision/audio/projector towers).")
+
+    # ------------------------------------------------------------------
+    # Reward wiring
+    # ------------------------------------------------------------------
+    reward_funcs = build_reward_funcs(args.curriculum_phase)
+    reward_weights = reward_weights_for_phase(args.curriculum_phase)
+    print(f"Curriculum phase: {args.curriculum_phase}")
+    print(f"Reward funcs : {[f.__name__ for f in reward_funcs]}")
+    print(f"Reward weights: {reward_weights}")
+
+    # ------------------------------------------------------------------
+    # GRPO configuration (defaults carry inline rationale)
+    # ------------------------------------------------------------------
+    grpo_kwargs = dict(
+        output_dir=args.output_dir,
+        # --- generation -------------------------------------------------
+        temperature=1.0000001,  # TRL issue #5783: temperature exactly 1.0 with
+                                # Qwen models silently falls back to greedy
+                                # decoding; 1.0000001 keeps true sampling while
+                                # staying numerically at temperature 1.
+        top_p=0.99,             # light tail trimming for sampling stability
+        num_generations=args.num_generations,  # 8 completions per prompt group
+        beta=args.beta,         # 0.01: KL to the frozen SFT reference policy —
+                                # the main guard against reward hacking (e.g.
+                                # always answering is_uncertain=yes)
+        max_completion_length=args.max_completion_length,  # 128: the JSON
+                                # contract is tiny; anything longer is waste
+        max_prompt_length=args.max_prompt_length,
+        # --- vLLM -------------------------------------------------------
+        use_vllm=args.use_vllm,  # vLLM generation is ~an order of magnitude
+                                 # faster than HF generate for GRPO rollouts;
+                                 # off by default until vllm is installed
+        vllm_mode="colocate",   # single-GPU setup: vLLM shares the training GPU
+        vllm_gpu_memory_utilization=0.3,  # leave headroom for training state
+        # --- batching ---------------------------------------------------
+        per_device_train_batch_size=1,   # video tokens are huge; 1 per device
+        gradient_accumulation_steps=16,  # effective batch 16 prompts x 8 gens
+        # --- precision / memory -----------------------------------------
+        bf16=True,
+        gradient_checkpointing=True,
+        # --- optimization / logging --------------------------------------
+        learning_rate=args.learning_rate,  # 1e-5 is a safe LoRA GRPO rate
+        num_train_epochs=args.num_train_epochs,
+        logging_steps=5,
+        save_steps=100,
+        seed=args.seed,
+        reward_weights=reward_weights,
+        report_to=[],           # add "wandb" / "tensorboard" as desired
+    )
+    # TRL's GRPOConfig signature drifts between versions (e.g. TRL 1.16
+    # dropped max_prompt_length). Filter to what the installed version
+    # actually accepts instead of pinning the code to one TRL release.
+    import inspect
+    valid_params = set(inspect.signature(GRPOConfig.__init__).parameters)
+    dropped = sorted(k for k, v in grpo_kwargs.items() if k not in valid_params)
+    if dropped:
+        print(f"Note: GRPOConfig of this TRL version ignores: {dropped}")
+    grpo_kwargs = {k: v for k, v in grpo_kwargs.items()
+                   if k in valid_params and v is not None}
+    grpo_config = GRPOConfig(**grpo_kwargs)
+
+    # ------------------------------------------------------------------
+    # Monitoring callback
+    # ------------------------------------------------------------------
+    class UncertaintyMonitorCallback(TrainerCallback):
+        """Logs the running mean share of is_uncertain='yes' predictions.
+
+        TRL already logs every reward component under
+        ``rewards/<fn_name>/mean`` — watching ``rewards/reward_uncertainty/mean``
+        is the primary reward-hacking sensor: if the policy collapses to
+        always answering is_uncertain=yes (to farm conflict reward), the
+        uncertainty component mean and the is_uncertain share will spike
+        together. This callback prints the is_uncertain share whenever the
+        trainer's log payload carries it (e.g. from a custom metric);
+        otherwise rely on the TRL reward-component logs above.
+        """
+
+        def __init__(self):
+            self._buffer = []
+
+        def on_log(self, args_, state, control, logs=None, **kwargs):
+            logs = logs or {}
+            share = logs.get("is_uncertain_yes_share")
+            if share is not None:
+                self._buffer.append(share)
+                running = sum(self._buffer) / len(self._buffer)
+                print(
+                    f"[step {state.global_step}] is_uncertain='yes' share: "
+                    f"{share:.3f} (running mean {running:.3f})"
+                )
+            return control
+
+    # ------------------------------------------------------------------
+    # Dataset + trainer
+    # ------------------------------------------------------------------
+    train_dataset = Dataset.from_list(rows)
+
+    trainer = GRPOTrainer(
+        model=model,
+        processing_class=processor,
+        reward_funcs=reward_funcs,
+        args=grpo_config,
+        train_dataset=train_dataset,
+        callbacks=[UncertaintyMonitorCallback()],
+    )
+
+    trainer.train()
+    trainer.save_model(args.output_dir)
+    processor.save_pretrained(args.output_dir)
+    print(f"Done. Checkpoints saved under {args.output_dir}")
 
 
 if __name__ == "__main__":
-    entrypoint()
+    main()

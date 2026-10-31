@@ -1,4 +1,0 @@
-{
-  "experiment": {"reward_version": "f1_delta_v1"},
-  "runtime": {"gpu": "auto", "micro_batch_size": 1, "max_runtime_hours": null}
-}
