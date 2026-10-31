@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from typing import Any, Iterable
 EMOTIONS = {"positive", "negative", "neutral"}
 SAMPLE_TYPES = {"Aligned", "Conflict"}
 PROTOCOLS = {"VT", "VA"}
+OMNI_INPUT_POLICIES = ("legacy", "protocol_consistent")
 EXPECTED_MODALITIES = {
     "VT": {"M1": "vision", "M2": "text", "M12": "vision+text"},
     "VA": {"M1": "vision", "M2": "audio", "M12": "vision+audio"},
@@ -50,8 +52,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=repo_root / "data" / "cleaned" / "use_in_main_true",
+        default=None,
         help="Directory for split-prefixed cleaned JSONL files and the report.",
+    )
+    parser.add_argument(
+        "--omni-input-policy", choices=OMNI_INPUT_POLICIES, default="legacy",
+        help=("legacy preserves the historical VTA/paired-union preparation; "
+              "protocol_consistent preserves all original protocol labels and records, "
+              "using VT=vision+text and VA=vision+audio in a separate default directory."),
     )
     parser.add_argument(
         "--ignore-use-in-main",
@@ -244,7 +252,10 @@ def build_omni_records(
     groups: dict[str, dict[str, dict[str, Any]]],
     *,
     baseline_aligned_validation: bool = False,
+    omni_input_policy: str = "legacy",
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
+    if omni_input_policy not in OMNI_INPUT_POLICIES:
+        raise ValueError("Unknown Omni input policy")
     outputs: list[dict[str, Any]] = []
     actions: Counter[str] = Counter()
     for record in records:
@@ -254,6 +265,11 @@ def build_omni_records(
             action = "kept_vt"
             training_protocol = "VT"
             input_modalities = ["vision", "text"]
+        elif omni_input_policy == "protocol_consistent":
+            effective_sample_type = record["sample_type"]
+            action = "kept_original_va_protocol_labels"
+            training_protocol = "VA"
+            input_modalities = ["vision", "audio"]
         else:
             paired_types = {item["sample_type"] for item in group.values()}
             effective_sample_type = "Conflict" if "Conflict" in paired_types else "Aligned"
@@ -285,6 +301,17 @@ def build_omni_records(
                 cleaning_action=action,
             )
         )
+        if omni_input_policy == "protocol_consistent":
+            # Keep original per-view clarity. Unclear views remain main-task
+            # examples; only clear views are eligible for auxiliary supervision.
+            outputs[-1].update(
+                omni_input_policy=omni_input_policy,
+                views=deepcopy(record["views"]),
+                use_in_main=deepcopy(record.get("use_in_main", False)),
+                view_supervision={view["modality"]: view["label"]
+                    for name in ("M1", "M2")
+                    if (view := record["views"][name]).get("is_clear") is True},
+            )
     return outputs, actions
 
 
@@ -321,7 +348,15 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     input_path = args.input.absolute()
     dataset_root = args.dataset_root.absolute()
-    output_dir = args.output_dir.absolute()
+    consistent = args.omni_input_policy == "protocol_consistent"
+    default_output = (repo_root / "data" / "cleaned" / "protocol_consistent" / args.expected_split
+                      if consistent else repo_root / "data" / "cleaned" / "use_in_main_true")
+    output_dir = (args.output_dir or default_output).absolute()
+    keep_all = args.ignore_use_in_main or consistent
+    if consistent and output_dir.resolve() in {
+            (repo_root / "data" / "cleaned" / name).resolve()
+            for name in ("all", "val", "use_in_main_true")}:
+        raise ValueError("Protocol-consistent cleaning requires a separate output directory")
 
     if args.baseline_aligned_validation and args.expected_split != "val":
         raise ValueError("--baseline-aligned-validation requires --expected-split val")
@@ -344,7 +379,7 @@ def main() -> None:
             if sample_id in seen_sample_ids:
                 reasons.append("duplicate_sample_id")
             seen_sample_ids.add(sample_id)
-        if not args.ignore_use_in_main and record.get("use_in_main") is not True:
+        if not keep_all and record.get("use_in_main") is not True:
             reasons.append("use_in_main_false")
 
         if reasons:
@@ -376,11 +411,12 @@ def main() -> None:
         for group_id, group in groups.items()
         if len({item["views"]["M12"]["label"] for item in group.values()}) > 1
     ]
-    if emotion_mismatch_groups:
+    if emotion_mismatch_groups and not consistent:
         preview = ", ".join(emotion_mismatch_groups[:5])
         raise ValueError(f"Paired groups disagree on M12 emotion: {preview}")
 
-    if args.baseline_aligned_validation:
+    baseline_inputs = args.baseline_aligned_validation or (consistent and args.expected_split == "val")
+    if baseline_inputs:
         vl_records, vl_actions = build_vl_records_preserving_source(
             accepted, groups
         )
@@ -389,7 +425,8 @@ def main() -> None:
     omni_records, omni_actions = build_omni_records(
         accepted,
         groups,
-        baseline_aligned_validation=args.baseline_aligned_validation,
+        baseline_aligned_validation=baseline_inputs,
+        omni_input_policy=args.omni_input_policy,
     )
 
     vl_path = output_dir / f"{args.expected_split}_vl_clean.jsonl"
@@ -403,23 +440,24 @@ def main() -> None:
     report = {
         "schema_version": 1,
         "split": args.expected_split,
-        "variant": "all" if args.ignore_use_in_main else "use_in_main_true",
+        "variant": "all" if keep_all else "use_in_main_true",
+        "omni_input_policy": args.omni_input_policy,
         "input": {
             "path": path_for_report(input_path, repo_root),
             "records": len(raw_records),
         },
         "filtering": {
             "use_in_main_policy": (
-                "ignored" if args.ignore_use_in_main else "require_true"
+                "ignored" if keep_all else "require_true"
             ),
             "vl_source_record_policy": (
                 "preserve_all_with_baseline_inputs"
-                if args.baseline_aligned_validation
+                if baseline_inputs
                 else "collapse_equivalent_groups"
             ),
             "evaluation_input_policy": (
                 "baseline_aligned"
-                if args.baseline_aligned_validation
+                if baseline_inputs
                 else "training_default"
             ),
             "accepted_records": len(accepted),
@@ -453,15 +491,16 @@ def main() -> None:
             "Conflict samples are preserved; conflict means the model should output is_uncertain=yes.",
             (
                 "VL preserves every source record with baseline inputs: VT uses vision+text and VA uses vision only."
-                if args.baseline_aligned_validation
+                if baseline_inputs
                 else "VL keeps VT when VT and VA share a split_group_id because both become vision+text inputs."
             ),
             (
                 "Omni baseline validation inputs are VT=vision+text and VA=vision+audio; supplied text is withheld for VA."
-                if args.baseline_aligned_validation
+                if baseline_inputs or consistent
                 else "Omni training inputs are VT=vision+text and VA=vision+text+audio."
             ),
-            "Omni VA uncertainty is the union of paired VT and VA conflict labels.",
+            ("Omni preserves original protocol-specific labels and all view clarity metadata; only clear M1/M2 views supply auxiliary supervision."
+             if consistent else "Omni VA uncertainty is the union of paired VT and VA conflict labels."),
             "For unpaired VA records, no VT text-view label exists, so the original VA target is retained.",
         ],
     }

@@ -172,10 +172,10 @@ def test_raw_completion_parsing_used():
     try:
         write_jsonl(fx.input, [
             completion_row(SAMPLE_IDS[0], "negative", "yes", "Which modality?"),
-            # JSON embedded in extra text must still parse.
+            # The raw completion must itself satisfy the output contract.
             {"sample_id": SAMPLE_IDS[1], "response":
-                'Answer: {"pred_emotion": "positive", "is_uncertain": "no", '
-                '"clarifying_question": "none"} done'},
+                '{"pred_emotion": "positive", "is_uncertain": "no", '
+                '"clarifying_question": "none"}'},
             *[parsed_row(sid) for sid in SAMPLE_IDS[2:]],
         ])
         rc, out = run_cli(fx.base_args())
@@ -263,6 +263,36 @@ def test_csv_input_format():
                            "--output", fx.output])
         assert rc == 0, out
         assert all(r[1] == "positive" for r in read_csv(fx.output)[1:])
+    finally:
+        fx.cleanup()
+
+
+def test_strict_rejects_empty_question_and_embedded_json_without_fabricating_csv():
+    for bad in (parsed_row(SAMPLE_IDS[0], "negative", "no", ""),
+                {"sample_id": SAMPLE_IDS[0], "completion": 'Answer: ' + json.dumps({
+                    "pred_emotion": "negative", "is_uncertain": "no", "clarifying_question": "none"})}):
+        fx = Fixture()
+        try:
+            rows = clean_rows()
+            rows[0] = bad
+            write_jsonl(fx.input, rows)
+            rc, out = run_cli(fx.base_args() + ["--strict"])
+            assert rc == 2, (rc, out)
+            assert not os.path.exists(fx.output)
+        finally:
+            fx.cleanup()
+
+
+def test_strict_preserves_valid_question_text_exactly():
+    fx = Fixture()
+    try:
+        rows = clean_rows()
+        question = "  你现在的真实感受是什么？\n"
+        rows[0] = parsed_row(SAMPLE_IDS[0], "negative", "yes", question)
+        write_jsonl(fx.input, rows)
+        rc, out = run_cli(fx.base_args() + ["--strict"])
+        assert rc == 0, out
+        assert read_csv(fx.output)[1][3] == question
     finally:
         fx.cleanup()
 

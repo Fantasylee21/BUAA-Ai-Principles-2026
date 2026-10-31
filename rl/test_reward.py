@@ -1,307 +1,134 @@
-"""Stdlib-only test suite for rl/reward.py and rl/metrics.py.
-
-Run from the workspace root:
-
-    python rl/test_reward.py
-
-No third-party dependencies; plain asserts with a small runner that reports
-pass/fail per test.
-"""
-
+"""Reward invariants, metric parity and model-selection regressions."""
+import itertools
 import json
-import os
-import sys
+import random
+import unittest
 
-# Make sibling modules importable regardless of launch directory.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import metrics  # noqa: E402
-import reward  # noqa: E402
+from rl.metrics import compute_competition_score, evaluation_report, macro_f1, promotion_decision
+from rl.reward import FrozenF1Reference, RewardEngine, parse_completion
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_completion(pred_emotion="positive", is_uncertain="no",
-                    clarifying_question="none"):
-    return json.dumps({
-        "pred_emotion": pred_emotion,
-        "is_uncertain": is_uncertain,
-        "clarifying_question": clarifying_question,
-    })
+def completion(emotion="positive", uncertain="no", question=None):
+    return json.dumps({"pred_emotion": emotion, "is_uncertain": uncertain,
+                       "clarifying_question": question if question is not None else
+                       ("none" if uncertain == "no" else "你现在的感受是什么？")})
 
 
-def approx(a, b, tol=1e-9):
-    return abs(a - b) <= tol
+class RewardTests(unittest.TestCase):
+    def setUp(self):
+        self.population = {"Conflict": 411/3354, "Aligned": 2943/3354}
+        self.engine = RewardEngine(self.population)
+
+    def test_whole_object_and_duplicate_keys(self):
+        text = completion()
+        self.assertIsNotNone(parse_completion(" \n" + text + "\n"))
+        for value in ("Answer: " + text, text + text, "```json\n" + text + "\n```", "[]",
+                      text.replace('"positive"', '"happy"'), text.replace('"no"', 'false'),
+                      text[:-1], text.replace('"pred_emotion":', '"pred_emotion":"negative","pred_emotion":')):
+            self.assertIsNone(parse_completion(value), value)
+
+    def test_sampling_correction_preserves_expected_task_weights(self):
+        for kind, expected in (("Conflict", .6), ("Aligned", .4)):
+            uncertain = "yes" if kind == "Conflict" else "no"
+            score = self.engine.score(completion(uncertain=uncertain), "positive", kind)
+            self.assertAlmostEqual(score["uncertainty"], expected)
+        expected_emotion = sum(.5*self.engine.score(completion(), "positive", t)["emotion"]
+                               for t in self.population)
+        self.assertAlmostEqual(expected_emotion, .5)
+        # Constant-yes/no cannot obtain the uncertainty reward of a correct classifier.
+        for strategy, expected in (("yes", .3), ("no", .2)):
+            got = sum(.5*self.engine.score(completion(uncertain=strategy), "negative", t)["total"]
+                      for t in self.population)
+            self.assertAlmostEqual(got, expected)
+
+    def test_invalid_output_never_beats_a_valid_wrong_answer(self):
+        invalid = self.engine.score("garbage", "positive", "Conflict")["total"]
+        for gold, pred, kind, uncertain, question in itertools.product(
+                ("positive", "negative", "neutral"), ("positive", "negative", "neutral"),
+                ("Conflict", "Aligned"), ("yes", "no"), ("none", "", "你怎么想？")):
+            result = self.engine.score(completion(pred, uncertain, question), gold, kind)
+            self.assertGreater(result["total"], invalid)
+
+    def test_question_constraint_is_only_a_small_penalty(self):
+        valid = self.engine.score(completion(uncertain="yes"), "positive", "Conflict")
+        bad = self.engine.score(completion(uncertain="yes", question="none"), "positive", "Conflict")
+        self.assertAlmostEqual(valid["total"]-bad["total"], .02)
+        self.assertEqual(bad["emotion"], valid["emotion"])
+        self.assertEqual(bad["uncertainty"], valid["uncertainty"])
+
+    def test_reward_metadata_fails_closed(self):
+        for gold, kind in ((None, "Conflict"), ("positive", None), ("happy", "Aligned")):
+            with self.assertRaises(ValueError):
+                self.engine.score("bad", gold, kind)
+        with self.assertRaises(ValueError):
+            RewardEngine(self.population, {"Conflict": .2, "Aligned": .8})
+        with self.assertRaises(ValueError):
+            self.engine(["prompt"], [completion()], [], ["Aligned"], ["id"])
+        with self.assertRaises(ValueError):
+            RewardEngine(self.population, version="f1_delta_v1")
+
+    def test_conversational_completions(self):
+        self.assertEqual(parse_completion([{"role": "assistant", "content": [
+            {"type": "text", "text": completion()}]}]), json.loads(completion()))
+
+    def test_f1_reference_is_frozen_and_correct_label_is_never_worse(self):
+        rng = random.Random(42)
+        labels = ("positive", "negative", "neutral")
+        for _ in range(40):
+            records = [{"sample_id": str(i), "gt_label": rng.choice(labels)} for i in range(30)]
+            predictions = {r["sample_id"]: rng.choice([*labels, None]) for r in records}
+            reference = FrozenF1Reference(records, predictions)
+            snapshot = json.dumps(reference.matrix)
+            for row in records:
+                values = {c: reference.emotion_reward(row["sample_id"], row["gt_label"], c) for c in labels}
+                self.assertGreaterEqual(values[row["gt_label"]] + 1e-12, max(values.values()))
+                self.assertTrue(all(-1 <= value <= 1 for value in values.values()))
+            self.assertEqual(json.dumps(reference.matrix), snapshot)
+        with self.assertRaises(ValueError):
+            FrozenF1Reference(records, {**predictions, "test_id": "positive"})
 
 
-# ---------------------------------------------------------------------------
-# reward.py tests
-# ---------------------------------------------------------------------------
+class MetricTests(unittest.TestCase):
+    def test_original_ch_sims_v2_source_is_included_in_natural_conflict_guard(self):
+        rows = [
+            {"gt_label": "positive", "pred_emotion": "positive", "sample_type": "Conflict",
+             "is_uncertain": "no", "source_dataset": "ch_sims_v2", "protocol": "VA"},
+            {"gt_label": "negative", "pred_emotion": "negative", "sample_type": "Aligned",
+             "is_uncertain": "no", "source_dataset": "ch_sims_v2", "protocol": "VT"},
+            {"gt_label": "positive", "pred_emotion": "positive", "sample_type": "Conflict",
+             "is_uncertain": "yes", "source_dataset": "synthetic", "protocol": "VT"}]
+        result = evaluation_report(rows)
+        self.assertEqual(result["natural_conflict_recall"], 0)
+        self.assertEqual(result["conflict_accuracy"], .5)
 
-def test_valid_correct_answer_full_reward():
-    res = reward.compute_sample_reward(
-        make_completion("positive", "no", "none"), "positive", "Aligned"
-    )
-    assert res["valid_json"] is True
-    assert res["components"]["reward_format"] == 1.0
-    assert res["components"]["reward_emotion"] == 1.0
-    assert res["components"]["reward_uncertainty"] == 0.4  # aligned correct
-    assert res["components"]["reward_question_consistency"] == 0.0
-    expected_total = 0.10 * 1.0 + 0.50 * 1.0 + 0.40 * 0.4 + 0.05 * 0.0
-    assert approx(res["total"], expected_total), res["total"]
+    def test_fixed_class_metric_cannot_silently_turn_into_present_class_metric(self):
+        rows = [{"gt_label": "positive", "pred_emotion": "positive", "sample_type": "Conflict", "is_uncertain": "yes"},
+                {"gt_label": "negative", "pred_emotion": "negative", "sample_type": "Aligned", "is_uncertain": "no"}]
+        metrics = compute_competition_score(rows)
+        self.assertAlmostEqual(metrics["macro_f1"], 2/3)
+        self.assertEqual(metrics["macro_f1_union_diagnostic"], 1)
+        self.assertAlmostEqual(metrics["score"], 5/6)
+        self.assertEqual(metrics["score_union_diagnostic"], 1)
 
+    def test_invalid_predictions_stay_in_denominators(self):
+        self.assertAlmostEqual(macro_f1(["positive", "positive"], ["positive", None]), 2/9)
+        rows = [{"gt_label": "positive", "pred_emotion": None, "sample_type": "Conflict", "is_uncertain": None}]
+        result = compute_competition_score(rows)
+        self.assertEqual(result["conflict_accuracy"], 0)
+        self.assertIsNone(result["score"])
+        self.assertEqual(result["invalid_outputs"], 1)
+        self.assertIsNone(compute_competition_score([])["score"])
 
-def test_wrong_emotion():
-    res = reward.compute_sample_reward(
-        make_completion("negative", "no", "none"), "positive", "Aligned"
-    )
-    assert res["components"]["reward_emotion"] == 0.0
-    assert res["components"]["reward_format"] == 1.0  # format still valid
-
-
-def test_uncertainty_signs_and_magnitudes():
-    # Conflict: yes -> +0.6, no -> -0.3
-    c_yes = reward.compute_sample_reward(
-        make_completion(is_uncertain="yes", clarifying_question="Which modality?"),
-        "positive", "Conflict",
-    )["components"]["reward_uncertainty"]
-    c_no = reward.compute_sample_reward(
-        make_completion(is_uncertain="no"), "positive", "Conflict",
-    )["components"]["reward_uncertainty"]
-    # Aligned: no -> +0.4, yes -> -0.2
-    a_no = reward.compute_sample_reward(
-        make_completion(is_uncertain="no"), "positive", "Aligned",
-    )["components"]["reward_uncertainty"]
-    a_yes = reward.compute_sample_reward(
-        make_completion(is_uncertain="yes", clarifying_question="Which modality?"),
-        "positive", "Aligned",
-    )["components"]["reward_uncertainty"]
-
-    assert approx(c_yes, 0.6) and approx(c_no, -0.3)
-    assert approx(a_no, 0.4) and approx(a_yes, -0.2)
-    # Signs
-    assert c_yes > 0 > c_no
-    assert a_no > 0 > a_yes
-    # Relative magnitudes: conflict branch outweighs aligned branch (0.6 vs 0.4),
-    # mirroring the metric's 0.3 vs 0.2 asymmetry.
-    assert c_yes > a_no
-    assert abs(c_no) > abs(a_yes)
-
-
-def test_malformed_json_format_zero():
-    for bad in [
-        "not json at all",
-        '{"pred_emotion": "positive"',                      # unbalanced
-        '{"pred_emotion": "happy", "is_uncertain": "no", "clarifying_question": "none"}',  # bad enum
-        '{"pred_emotion": "positive", "is_uncertain": "no"}',  # missing field
-        '{"pred_emotion": "positive", "is_uncertain": "maybe", "clarifying_question": "none"}',
-        '[1, 2, 3]',
-        "",
-    ]:
-        res = reward.compute_sample_reward(bad, "positive", "Aligned")
-        assert res["valid_json"] is False, bad
-        assert res["components"]["reward_format"] == 0.0, bad
-        assert res["components"]["reward_emotion"] == 0.0, bad
-        assert res["components"]["reward_uncertainty"] == 0.0, bad
-        assert res["total"] == 0.0, bad
-
-
-def test_missing_question_when_uncertain_penalty():
-    for q in ["none", "", "   "]:
-        res = reward.compute_sample_reward(
-            make_completion(is_uncertain="yes", clarifying_question=q),
-            "positive", "Conflict",
-        )
-        assert res["components"]["reward_question_consistency"] == -1.0, q
-
-
-def test_question_present_when_not_uncertain_penalty():
-    res = reward.compute_sample_reward(
-        make_completion(is_uncertain="no", clarifying_question="Are you sure?"),
-        "positive", "Aligned",
-    )
-    assert res["components"]["reward_question_consistency"] == -1.0
-
-
-def test_none_question_when_not_uncertain_no_penalty():
-    res = reward.compute_sample_reward(
-        make_completion(is_uncertain="no", clarifying_question="none"),
-        "positive", "Aligned",
-    )
-    assert res["components"]["reward_question_consistency"] == 0.0
-
-
-def test_conversational_completion_parsing():
-    payload = make_completion("negative", "no", "none")
-    conv = [{"role": "assistant", "content": payload}]
-    res = reward.compute_sample_reward(conv, "negative", "Aligned")
-    assert res["valid_json"] is True
-    assert res["components"]["reward_emotion"] == 1.0
-
-    # Content as a list of typed parts also parses.
-    conv_parts = [{"role": "assistant",
-                   "content": [{"type": "text", "text": payload}]}]
-    res = reward.compute_sample_reward(conv_parts, "negative", "Aligned")
-    assert res["valid_json"] is True
-    assert res["components"]["reward_emotion"] == 1.0
-
-
-def test_json_embedded_in_extra_text():
-    payload = make_completion("neutral", "yes", "Could you clarify?")
-    noisy = f"Sure! Here is my answer:\n{payload}\nHope that helps."
-    res = reward.compute_sample_reward(noisy, "neutral", "Conflict")
-    assert res["valid_json"] is True
-    assert res["components"]["reward_format"] == 1.0
-    assert res["components"]["reward_emotion"] == 1.0
-    assert approx(res["components"]["reward_uncertainty"], 0.6)
-
-
-def test_trl_wrapper_signatures():
-    prompts = ["p1", "p2"]
-    completions = [
-        make_completion("positive", "no", "none"),
-        [{"role": "assistant", "content": make_completion("negative", "yes", "Q?")}],
-    ]
-    gt = ["positive", "negative"]
-    st = ["Aligned", "Conflict"]
-    fmt = reward.reward_format(prompts, completions, gt_label=gt, sample_type=st)
-    emo = reward.reward_emotion(prompts, completions, gt_label=gt, sample_type=st)
-    unc = reward.reward_uncertainty(prompts, completions, gt_label=gt, sample_type=st)
-    qc = reward.reward_question_consistency(prompts, completions, gt_label=gt,
-                                            sample_type=st)
-    assert fmt == [1.0, 1.0]
-    assert emo == [1.0, 1.0]
-    assert approx(unc[0], 0.4) and approx(unc[1], 0.6)
-    assert qc == [0.0, 0.0]
-
-
-def test_build_reward_funcs_phases():
-    warmup = reward.build_reward_funcs("warmup")
-    full = reward.build_reward_funcs("full")
-    assert [f.__name__ for f in warmup] == ["reward_format", "reward_emotion"]
-    assert [f.__name__ for f in full] == [
-        "reward_format", "reward_emotion",
-        "reward_uncertainty", "reward_question_consistency",
-    ]
-    w_warmup = reward.reward_weights_for_phase("warmup")
-    w_full = reward.reward_weights_for_phase("full")
-    assert approx(sum(w_warmup), 0.10 + 0.50)
-    assert approx(sum(w_full), 0.10 + 0.50 + 0.40 + 0.05)
-    try:
-        reward.build_reward_funcs("bogus")
-        raise AssertionError("expected ValueError for unknown phase")
-    except ValueError:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# metrics.py tests
-# ---------------------------------------------------------------------------
-
-def test_compute_competition_score_numeric():
-    # Hand-computed example.
-    records = [
-        {"gt_label": "positive", "sample_type": "Aligned",
-         "pred_emotion": "positive", "is_uncertain": "no"},
-        {"gt_label": "negative", "sample_type": "Aligned",
-         "pred_emotion": "negative", "is_uncertain": "no"},
-        {"gt_label": "positive", "sample_type": "Conflict",
-         "pred_emotion": "negative", "is_uncertain": "yes"},
-        {"gt_label": "negative", "sample_type": "Conflict",
-         "pred_emotion": "negative", "is_uncertain": "no"},
-    ]
-    # Macro-F1 over {positive, negative}:
-    #   positive: tp=1, fp=0, fn=1 -> P=1.0, R=0.5, F1=2/3
-    #   negative: tp=2, fp=1, fn=0 -> P=2/3, R=1.0, F1=0.8
-    #   macro = (2/3 + 0.8) / 2 = 0.733333...
-    f1 = (2.0 / 3.0 + 0.8) / 2.0
-    ca = 1.0 / 2.0   # one of two conflict samples has is_uncertain=yes
-    cal = 2.0 / 2.0  # both aligned samples have is_uncertain=no
-    expected = 0.5 * f1 + 0.3 * ca + 0.2 * cal
-
-    out = metrics.compute_competition_score(records)
-    assert approx(out["macro_f1"], f1, 1e-12), out["macro_f1"]
-    assert approx(out["conflict_accuracy"], ca, 1e-12)
-    assert approx(out["aligned_calibration"], cal, 1e-12)
-    assert approx(out["score"], expected, 1e-12), out["score"]
-    assert out["n_conflict"] == 2 and out["n_aligned"] == 2
-
-
-def test_compute_competition_score_invalid_predictions():
-    # Unparseable prediction -> pred_emotion=None penalized in F1 and
-    # is_uncertain=None penalized in calibration denominators.
-    records = [
-        {"gt_label": "positive", "sample_type": "Aligned",
-         "pred_emotion": None, "is_uncertain": None},
-        {"gt_label": "positive", "sample_type": "Conflict",
-         "pred_emotion": "positive", "is_uncertain": "yes"},
-    ]
-    out = metrics.compute_competition_score(records)
-    assert out["conflict_accuracy"] == 1.0
-    assert out["aligned_calibration"] == 0.0  # None counts as a miss
-    assert 0.0 <= out["macro_f1"] < 1.0
-    assert 0.0 <= out["score"] <= 1.0
-
-
-def test_compute_competition_score_empty_subsets():
-    # No conflict samples -> conflict_accuracy None, weights renormalized.
-    records = [
-        {"gt_label": "positive", "sample_type": "Aligned",
-         "pred_emotion": "positive", "is_uncertain": "no"},
-    ]
-    out = metrics.compute_competition_score(records)
-    assert out["conflict_accuracy"] is None
-    assert approx(out["aligned_calibration"], 1.0)
-    assert approx(out["score"], (0.5 * 1.0 + 0.2 * 1.0) / 0.7)
-    # Fully empty input does not crash.
-    empty = metrics.compute_competition_score([])
-    assert empty["score"] == 0.0
-
-
-def test_parse_prediction():
-    good = metrics.parse_prediction(
-        make_completion("negative", "yes", "What is the tone?"))
-    assert good == {"pred_emotion": "negative", "is_uncertain": "yes"}
-    bad = metrics.parse_prediction("garbage, no json here")
-    assert bad == {"pred_emotion": None, "is_uncertain": None}
-
-
-def test_macro_f1_manual():
-    # Union of labels includes a class predicted but never true.
-    y_true = ["positive", "positive", "negative"]
-    y_pred = ["positive", "neutral", "negative"]
-    # positive: tp=1, fp=0, fn=1 -> F1 = 2/3
-    # negative: tp=1, fp=0, fn=0 -> F1 = 1
-    # neutral:  tp=0, fp=1, fn=0 -> F1 = 0
-    expected = (2.0 / 3.0 + 1.0 + 0.0) / 3.0
-    assert approx(metrics.macro_f1(y_true, y_pred), expected, 1e-12)
-    assert metrics.macro_f1([], []) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-def main():
-    tests = [(name, fn) for name, fn in sorted(globals().items())
-             if name.startswith("test_") and callable(fn)]
-    failures = 0
-    for name, fn in tests:
-        try:
-            fn()
-            print(f"PASS {name}")
-        except AssertionError as exc:
-            failures += 1
-            print(f"FAIL {name}: {exc!r}")
-        except Exception as exc:  # noqa: BLE001 - report everything
-            failures += 1
-            print(f"ERROR {name}: {type(exc).__name__}: {exc}")
-    print(f"\n{len(tests) - failures}/{len(tests)} tests passed.")
-    if failures:
-        sys.exit(1)
+    def test_selection_requires_actual_score_gain_and_no_quality_regression(self):
+        baseline = {"score": .72, "macro_f1": .63, "aligned_calibration": .95,
+                    "natural_conflict_recall": .4}
+        candidate = {**baseline, "score": .73}
+        self.assertTrue(promotion_decision(baseline, candidate)["promote"])
+        for change in ({"score": .722}, {"macro_f1": .62}, {"aligned_calibration": .93},
+                       {"natural_conflict_recall": .3}, {"invalid_outputs": 1},
+                       {"inconsistent_questions": 1}):
+            self.assertFalse(promotion_decision(baseline, {**candidate, **change})["promote"])
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()
