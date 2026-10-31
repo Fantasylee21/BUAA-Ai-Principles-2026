@@ -44,10 +44,15 @@ the repository root with the compatible environment active:
 CONDA_ENV=llama-factory STAGE=prepare bash scripts/run_omni7b_sft_v5.sh
 CONDA_ENV=llama-factory STAGE=train GPU_ID=4,5 bash scripts/run_omni7b_sft_v5.sh
 CONDA_ENV=llama-factory STAGE=evaluate EVAL_GPU_ID=4 bash scripts/run_omni7b_sft_v5.sh
+CONDA_ENV=llama-factory STAGE=submit EVAL_GPU_ID=4 bash scripts/run_omni7b_sft_v5.sh
 ```
 
-`STAGE=all` runs those stages in order. Set `GPU_ID` to one GPU index if using
+`STAGE=all` runs those stages in order and writes `submit.csv` at the repository
+root. It chooses the highest scoring validation checkpoint, runs full test
+inference, checks all 734 IDs and output fields, then writes the CSV. Set
+`SUBMIT_PATH` to change the destination. Set `GPU_ID` to one GPU index if using
 one card. `SOURCE_DIR` can point at a prepared ShareGPT directory in another
 checkout. The selected adapter and metrics are saved under
 `output/sft/qwen25omni/qlora_sft_v5_targeted_7b/` and
-`output/sft/evaluation/`. The script does not make a test submission.
+`output/sft/evaluation/`. `STAGE=submit` expects an existing
+`best_checkpoint.json` from `STAGE=evaluate`.
