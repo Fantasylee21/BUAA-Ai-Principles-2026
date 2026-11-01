@@ -1,5 +1,10 @@
 # Omni 7B SFT v5: targeted conflict sampling
 
+**Status update:** This experiment has completed. See
+[results and submission record](omni7b_v5_results.md) for checkpoint selection,
+the submitted file, and the reported leaderboard scores. The text below records
+the original plan.
+
 This is a proposed **new training run**, not a measured improvement. It uses the
 local Qwen2.5-Omni-7B checkpoint and compares against the local 7B v4 run.
 The published v4 report's 3B results are a separate experiment.
