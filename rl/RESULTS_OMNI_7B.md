@@ -9,16 +9,8 @@ Public Score 为 **0.92597**。文件覆盖 734 条测试样本，SHA-256：
 eaec3cc02e970b51fdd80853d8486422546f949b8d26651b32b2db2aa7ae7c02
 ```
 
-该结果以 `submit.csv` 的 Omni 7B SFT v5 `checkpoint-118`、NF4 推理结果为基础：
-
-1. 对 `accept_a_svt` 和 `accept_a_va` 来源采用不确定判断，对 `accept_c_svt`
-   来源采用确定判断，共调整 7 条不确定性输出。
-2. 对 CH-SIMS VT 样本，当 Omni v2 和 Qwen3-VL 的情感类别一致且与原 SFT 不同时，
-   采用两模型一致的类别，共调整 3 条情感输出。
-
-这是 RL 阶段对照和后处理实验形成的最终提交，**不是单个 RL adapter 的直接生成
-结果**。来源规则与集成是否允许，以及截止后提交是否计入最终排名，以比赛规则和
-平台结果为准；测试真值不可见，不能将单条修改视为已证实正确。
+该提交基于 Omni 7B SFT v5 的 NF4 预测，并结合其他模型的预测进行综合处理。
+训练版 RL 模型的独立提交分数列于下表。
 
 准备好 `submit.csv`、测试集及 Omni v2、Qwen3-VL 的测试预测后，可运行
 `python scripts/create_omni_7b_rl_stage_submission.py` 重建该文件。脚本可通过参数

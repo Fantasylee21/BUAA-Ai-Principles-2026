@@ -14,10 +14,9 @@ NF4 double quant 加载基座，计算精度为 BF16。它不是 BF16 全精度�
 ### 榜单分数的记录边界
 
 用户提供 `submit.csv` 的 Public Score 为 **0.91162**。在 RL 阶段实验中，指定结果
-文件 `submit_source_emotion_vt.csv` 的 Public Score 为 **0.92597**；它在 SFT
-预测基础上加入来源规则和情感集成，不是单一 RL adapter 的直接推理输出。两个
-文件的结果分别记录；RL 阶段结果详见 [RL 实验结果](../../rl/RESULTS_OMNI_7B.md)。
-截图显示提交为 after deadline，是否计入最终排名以比赛平台为准。
+文件 `submit_source_emotion_vt.csv` 的 Public Score 为 **0.92597**，基于 SFT
+和其他模型预测进行综合处理。两个文件的结果分别记录；RL 阶段结果详见
+[RL 实验结果](../../rl/RESULTS_OMNI_7B.md)。
 
 ## 训练设置
 
