@@ -13,10 +13,20 @@ PREPARE_DATA="${PREPARE_DATA:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 LLAMAFACTORY_DIR="${REPO_ROOT}/third_party/LlamaFactory"
 DATASET_INFO="${REPO_ROOT}/data/llamafactory/dataset_info.json"
+if [[ ! "$GPU_ID" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    printf 'GPU IDs must be comma-separated integers: %s\n' "$GPU_ID" >&2
+    exit 2
+fi
+IFS=',' read -r -a GPU_LIST <<< "$GPU_ID"
+if [[ "$(printf '%s\n' "${GPU_LIST[@]}" | sort -u | wc -l)" -ne "${#GPU_LIST[@]}" ]]; then
+    printf 'GPU IDs must be unique: %s\n' "$GPU_ID" >&2
+    exit 2
+fi
+GPU_COUNT="${#GPU_LIST[@]}"
 
 usage() {
     cat <<'EOF'
-Usage: bash scripts/run_sft_training.sh METHOD CONFIG_YAML [GPU_ID]
+Usage: bash scripts/run_sft_training.sh METHOD CONFIG_YAML [GPU_ID_OR_COMMA_SEPARATED_IDS]
 
 METHOD:
   lora | qlora
@@ -82,6 +92,10 @@ else
     }
     PYTHON_RUNNER=(python)
 fi
+TRAIN_RUNNER=("${PYTHON_RUNNER[@]}")
+if [[ "$GPU_COUNT" -gt 1 ]]; then
+    TRAIN_RUNNER+=(-m torch.distributed.run --standalone "--nproc_per_node=${GPU_COUNT}")
+fi
 
 mapfile -t CONFIG_META < <(
     "${PYTHON_RUNNER[@]}" "${REPO_ROOT}/scripts/sft_config.py" \
@@ -144,12 +158,26 @@ LOG_PATH="${LOG_DIR}/${RUN_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
 if [[ "$EXPECTED_METHOD" == "qlora" && "$DRY_RUN" == "0" ]]; then
     CUDA_VISIBLE_DEVICES="$GPU_ID" "${PYTHON_RUNNER[@]}" -c \
-        'import bitsandbytes, torch; assert torch.cuda.is_available(), "CUDA is unavailable"; print("bitsandbytes:", bitsandbytes.__version__)'
+        'import bitsandbytes, torch, sys; expected=int(sys.argv[1]); actual=torch.cuda.device_count(); assert actual == expected, f"Expected {expected} CUDA GPUs, found {actual}"; print("bitsandbytes:", bitsandbytes.__version__, "visible CUDA GPUs:", actual)' \
+        "$GPU_COUNT"
 fi
 
 latest_checkpoint() {
-    find "$1" -mindepth 1 -maxdepth 1 -type d -name 'checkpoint-*' \
-        -printf '%f\n' 2>/dev/null | sort -V | tail -n 1
+    local checkpoint name
+    while IFS= read -r name; do
+        checkpoint="$1/$name"
+        if valid_checkpoint "$checkpoint"; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+        printf 'Skipping incomplete checkpoint: %s\n' "$checkpoint" >&2
+    done < <(find "$1" -mindepth 1 -maxdepth 1 -type d -name 'checkpoint-*' \
+        -printf '%f\n' 2>/dev/null | sort -Vr)
+}
+
+valid_checkpoint() {
+    [[ -s "$1/trainer_state.json" && -s "$1/optimizer.pt" && -s "$1/scheduler.pt" ]] &&
+        [[ -s "$1/adapter_model.safetensors" || -s "$1/adapter_model.bin" ]]
 }
 
 TRAIN_OVERRIDES=("output_dir=${OUTPUT_DIR}")
@@ -163,6 +191,10 @@ case "$RESUME" in
     none) ;;
     *)
         require_directory "$RESUME"
+        if ! valid_checkpoint "$RESUME"; then
+            printf 'Checkpoint is incomplete and cannot resume training: %s\n' "$RESUME" >&2
+            exit 1
+        fi
         TRAIN_OVERRIDES+=("resume_from_checkpoint=${RESUME}")
         ;;
 esac
@@ -173,8 +205,8 @@ printf 'Config: %s\nOutput: %s\nLog: %s\n' \
     "$CONFIG_PATH" "$OUTPUT_DIR" "$LOG_PATH"
 
 if [[ "$DRY_RUN" == "1" ]]; then
-    printf 'Dry run command: CUDA_VISIBLE_DEVICES=%q python scripts/train_sft.py %q' \
-        "$GPU_ID" "$CONFIG_PATH"
+    printf 'Dry run command: CUDA_VISIBLE_DEVICES=%q' "$GPU_ID"
+    printf ' %q' "${TRAIN_RUNNER[@]}" "$REPO_ROOT/scripts/train_sft.py" "$CONFIG_PATH"
     printf ' %q' "${TRAIN_OVERRIDES[@]}"
     printf '\n'
     exit 0
@@ -183,13 +215,11 @@ fi
 (
     cd "$REPO_ROOT"
     CUDA_VISIBLE_DEVICES="$GPU_ID" \
-    FORCE_TORCHRUN=0 \
-    NPROC_PER_NODE=1 \
     PYTHONPATH="${LLAMAFACTORY_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
     HF_DATASETS_CACHE="${REPO_ROOT}/tmp/hf_datasets/${MODEL_KEY}" \
     PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     TOKENIZERS_PARALLELISM=false \
     OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" \
-    "${PYTHON_RUNNER[@]}" "${REPO_ROOT}/scripts/train_sft.py" \
+    "${TRAIN_RUNNER[@]}" "${REPO_ROOT}/scripts/train_sft.py" \
         "$CONFIG_PATH" "${TRAIN_OVERRIDES[@]}" 2>&1 | tee "$LOG_PATH"
 )
