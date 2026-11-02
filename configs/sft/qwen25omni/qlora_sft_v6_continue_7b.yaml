@@ -1,0 +1,94 @@
+# Omni 7B v5: targeted conflict sampling at near-v4 training volume.
+# Compare against local 7B v4; this run has no measured score yet.
+### model
+model_name_or_path: ../ckpt/Qwen2.5-Omni-7B
+adapter_name_or_path: output/sft/qwen25omni/qlora_sft_v5_targeted_7b/checkpoint-118
+trust_remote_code: true
+flash_attn: sdpa
+quantization_bit: 4
+quantization_method: bnb
+quantization_type: nf4
+double_quantization: true
+upcast_layernorm: true
+image_min_pixels: 3136
+image_max_pixels: 1003520
+video_min_pixels: 50176
+video_max_pixels: 50176
+video_fps: 2.0
+video_maxlen: 64
+audio_sampling_rate: 16000
+use_audio_in_video: true
+
+### method
+stage: sft
+do_train: true
+do_eval: false
+finetuning_type: lora
+lora_target: all
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+freeze_vision_tower: true
+freeze_multi_modal_projector: true
+freeze_language_model: false
+
+### dataset
+dataset_dir: data/llamafactory/generated/omni_v5_targeted
+media_dir: .
+dataset: affect_sft_omni_v5_aligned,affect_sft_omni_v5_svt_conflict,affect_sft_omni_v5_ch_sims_conflict,affect_sft_omni_v5_va_conflict
+mix_strategy: concat
+streaming: false
+eval_dataset: affect_sft_omni_val
+template: qwen2_omni
+cutoff_len: 6144
+train_on_prompt: false
+packing: false
+overwrite_cache: false
+preprocessing_num_workers: 4
+dataloader_num_workers: 2
+
+### output
+output_dir: output/sft/qwen25omni/qlora_sft_v6_continue_7b
+logging_steps: 5
+save_strategy: steps
+save_steps: 30
+save_total_limit: 4
+plot_loss: true
+overwrite_output_dir: false
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+learning_rate: 1.0e-5
+weight_decay: 0.01
+num_train_epochs: 1.0
+max_steps: 120
+lr_scheduler_type: cosine
+warmup_steps: 4
+max_grad_norm: 1.0
+bf16: true
+tf32: true
+seed: 42
+data_seed: 42
+ddp_timeout: 180000000
+resume_from_checkpoint: null
+
+### eval
+per_device_eval_batch_size: 1
+eval_strategy: "no"
+eval_accumulation_steps: 1
+load_best_model_at_end: false
+metric_for_best_model: eval_loss
+greater_is_better: false
+prediction_loss_only: true
+
+task_balanced_loss:
+  emotion: 0.5
+  uncertainty: 0.4
+  remainder: 0.1
+  conflict_multiplier: 2.0

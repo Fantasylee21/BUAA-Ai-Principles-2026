@@ -1,5 +1,8 @@
 # SFT 实验汇总
 
+本工作树的 Omni 7B v5 当前交付、训练设置和榜单记录见
+[Omni 7B SFT v5 结果与提交](omni7b_v5_results.md)。下文主要记录早期 3B/4B 实验。
+
 本文档汇总三个多模态模型在原始 Baseline 和 QLoRA SFT 后的官方验证集结果。
 所有结果均在完整的 `Dataset/val.jsonl` 上评估，共 666 条样本；验证集不去重。
 

@@ -15,6 +15,10 @@ Score = 0.5 * Macro-F1
       + 0.2 * Aligned_calibration
 ```
 
+Omni 7B 的补充实验见 [SFT v5 结果](reports/sft/omni7b_v5_results.md)、
+[NF4 RL 方法](rl/OMNI_7B_METHOD.md)和 [RL 阶段结果](rl/RESULTS_OMNI_7B.md)。
+其中 0.92597 的阶段提交综合了 SFT 及其他模型的预测。
+
 当前 SFT 路径覆盖以下三个模型：
 
 - Qwen2.5-VL-3B-Instruct

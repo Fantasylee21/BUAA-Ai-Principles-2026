@@ -110,6 +110,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sample-id", default=None)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -173,6 +175,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Token and checkpoint limits must be positive")
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive")
+    if args.num_shards < 1 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("Shard index must be in [0, num-shards)")
     if not args.model_path.is_dir():
         raise FileNotFoundError(args.model_path)
     if not (args.adapter_path / "adapter_config.json").is_file():
@@ -293,7 +297,7 @@ def prepare_inputs(
             padding=True,
             return_tensors="pt",
             videos_kwargs=videos_kwargs,
-        ).to("cuda:0").to(torch.bfloat16)
+        ).to(getattr(args, "device", "cuda:0")).to(torch.bfloat16)
         inputs["use_audio_in_video"] = use_audio
         return inputs, prompt
 
@@ -420,6 +424,7 @@ def main() -> None:
             raise ValueError(f"Unknown sample ID: {args.sample_id}")
     if args.limit is not None:
         rows = rows[: args.limit]
+    rows = rows[args.shard_index::args.num_shards]
     if not rows:
         raise RuntimeError(f"No rows loaded from {input_path}")
 
@@ -442,6 +447,8 @@ def main() -> None:
         "split": args.split,
         "limit": args.limit,
         "sample_id": args.sample_id,
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
         "input_profile": (
             "native_default"
             if all(
@@ -529,7 +536,8 @@ def main() -> None:
         flush=True,
     )
 
-    processor, model = build_model(args)
+    pending_rows = [row for row in rows if str(row["sample_id"]) not in completed]
+    processor, model = build_model(args) if pending_rows else (None, None)
 
     @torch.inference_mode()
     def infer_one(row: dict[str, Any]) -> dict[str, Any]:
@@ -573,7 +581,6 @@ def main() -> None:
 
     pending_buffer: list[dict[str, Any]] = []
     start = time.time()
-    pending_rows = [row for row in rows if str(row["sample_id"]) not in completed]
     for row in tqdm(
         pending_rows, desc=f"{args.model_key} {args.method.upper()} SFT"
     ):
