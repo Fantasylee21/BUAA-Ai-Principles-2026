@@ -25,6 +25,13 @@ Omni 7B 的补充实验见 [SFT v5 结果](reports/sft/omni7b_v5_results.md)、
 - Qwen3-VL-4B-Instruct
 - Qwen2.5-Omni-3B
 
+## RL 分支：成员实验入口
+
+当前 `rl` 分支保留团队已有实现，并通过 [experiments/](experiments/README.md) 按成员记录新增尝试。
+[xingzhenbang 的实验](experiments/xingzhenbang/README.md) 包含方法、结果、代码和模型版本说明；
+运行时先进入其工作目录，根目录原有 `rl/` 和 `rl_backup_v2/` 保持原样。
+仅在统一评估后，将确认有效的方法选入 `main`。
+
 ## SFT 最终交付版本（v4 / sft-final）
 
 本组当前选定的 SFT 交付方案是 `qlora_sft_v4_resample2x`，代码版本由

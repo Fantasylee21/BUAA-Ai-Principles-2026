@@ -1,0 +1,17 @@
+{
+  "algorithm": "omni_conflict_cost_v1",
+  "seed": 42,
+  "replication_seed": 43,
+  "steps": 420,
+  "epochs": 2,
+  "batch_size": 16,
+  "learning_rate": 0.000005,
+  "warmup_steps": 10,
+  "max_grad_norm": 1.0,
+  "beta": 0.02,
+  "pair_weight": 0.1,
+  "pair_margin": 1.0,
+  "smoke_steps": 40,
+  "budget_hours": null,
+  "training_cutoff_hours": null
+}

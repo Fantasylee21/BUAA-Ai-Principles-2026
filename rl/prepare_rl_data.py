@@ -34,7 +34,7 @@ from collections import Counter
 # ---------------------------------------------------------------------------
 
 OUTPUT_CONTRACT = (
-    '{"pred_emotion": "positive"|"negative"|"neutral", '
+    '{"pred_emotion": "positive"|"negative", '
     '"is_uncertain": "yes"|"no", '
     '"clarifying_question": "<string or \'none\'>"}'
 )
@@ -47,7 +47,7 @@ INSTRUCTION = (
     "reasoning, no extra text):\n"
     f"{OUTPUT_CONTRACT}\n"
     "Rules:\n"
-    '- "pred_emotion" is one of "positive", "negative", "neutral".\n'
+    '- "pred_emotion" is "positive" or "negative".\n'
     '- Set "is_uncertain" to "yes" when the modalities seem to conflict or '
     "the evidence is ambiguous; otherwise set it to \"no\".\n"
     '- Provide a short "clarifying_question" ONLY when "is_uncertain" is '
@@ -120,21 +120,22 @@ def main():
     parser.add_argument(
         "--va-text-mode",
         choices=["drop", "keep"],
-        default="drop",
-        help="For protocol==VA: drop the transcript from the prompt "
-        "(default, project rule) or keep it (ablation).",
+        default="keep",
+        help="For protocol==VA: keep the transcript in the prompt "
+        "(default 'keep' prevents model deafness in RL where audio tracks "
+        "are not loaded by TRL) or 'drop' (video-only ablation).",
     )
     parser.add_argument(
         "--conflict-repeat",
         type=int,
-        default=3,
-        help="Repeat factor for Conflict rows (default: 3).",
+        default=4,
+        help="Repeat factor for Conflict rows (default: 4).",
     )
     parser.add_argument(
         "--neutral-repeat",
         type=int,
-        default=20,
-        help="Repeat factor for rows whose gt_label is 'neutral' (default: 20).",
+        default=0,
+        help="Repeat factor for rows whose gt_label is 'neutral' (default: 0 to drop neutrals).",
     )
     parser.add_argument(
         "--seed",
@@ -149,10 +150,9 @@ def main():
 
     rows = []
     for record in records:
+        if record["views"]["M12"]["label"] == "neutral" and args.neutral_repeat <= 0:
+            continue  # Target competition test set only has positive and negative
         row = build_row(record, args.va_text_mode)
-        # Oversampling factor: conflict and neutral repeats combine by max
-        # (a row can be both Conflict and neutral-labeled; multiplying would
-        # over-amplify a handful of samples).
         repeat = 1
         if record["sample_type"] == "Conflict":
             repeat = max(repeat, args.conflict_repeat)

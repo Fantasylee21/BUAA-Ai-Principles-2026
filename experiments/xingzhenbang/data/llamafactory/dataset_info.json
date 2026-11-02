@@ -1,0 +1,64 @@
+{
+  "affect_sft_omni_train": {
+    "columns": {
+      "audios": "audios",
+      "messages": "messages",
+      "system": "system",
+      "videos": "videos"
+    },
+    "file_name": "generated/affect_sft_omni_train.jsonl",
+    "formatting": "sharegpt",
+    "tags": {
+      "assistant_tag": "assistant",
+      "content_tag": "content",
+      "role_tag": "role",
+      "user_tag": "user"
+    }
+  },
+  "affect_sft_omni_val": {
+    "columns": {
+      "audios": "audios",
+      "messages": "messages",
+      "system": "system",
+      "videos": "videos"
+    },
+    "file_name": "generated/affect_sft_omni_val.jsonl",
+    "formatting": "sharegpt",
+    "tags": {
+      "assistant_tag": "assistant",
+      "content_tag": "content",
+      "role_tag": "role",
+      "user_tag": "user"
+    }
+  },
+  "affect_sft_vl_train": {
+    "columns": {
+      "messages": "messages",
+      "system": "system",
+      "videos": "videos"
+    },
+    "file_name": "generated/affect_sft_vl_train.jsonl",
+    "formatting": "sharegpt",
+    "tags": {
+      "assistant_tag": "assistant",
+      "content_tag": "content",
+      "role_tag": "role",
+      "user_tag": "user"
+    }
+  },
+  "affect_sft_vl_val": {
+    "columns": {
+      "messages": "messages",
+      "system": "system",
+      "videos": "videos"
+    },
+    "file_name": "generated/affect_sft_vl_val.jsonl",
+    "formatting": "sharegpt",
+    "tags": {
+      "assistant_tag": "assistant",
+      "content_tag": "content",
+      "role_tag": "role",
+      "user_tag": "user"
+    }
+  }
+}

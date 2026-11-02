@@ -1,0 +1,18 @@
+schema_version: 1
+
+llamafactory:
+  project_directory: third_party/LlamaFactory
+  repository: https://github.com/hiyouga/LlamaFactory.git
+  commit: 97b32d3133b501432141a82949d5c7bc4d94f23a
+  version: 0.9.6.dev0
+
+runtime:
+  python: "3.13"
+  torch: 2.6.0+cu124
+  transformers: 5.8.0
+
+notes:
+  - The third_party directory must contain a project named LlamaFactory.
+  - Add /third_party/LlamaFactory to the project .gitignore file.
+  - Verify the LlamaFactory commit against this lock file before training.
+  - Do not update LlamaFactory during a recorded experiment.

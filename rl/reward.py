@@ -41,6 +41,7 @@ import json
 # ---------------------------------------------------------------------------
 
 VALID_EMOTIONS = ("positive", "negative", "neutral")
+TARGET_EMOTIONS = ("positive", "negative")
 VALID_UNCERTAIN = ("yes", "no")
 REQUIRED_FIELDS = ("pred_emotion", "is_uncertain", "clarifying_question")
 
@@ -53,10 +54,14 @@ REWARD_WEIGHTS = {
     "reward_question_consistency": 0.05,  # penalty-only component
 }
 
-# Internal scaling of the uncertainty component, mirroring the metric's
-# 0.3 (conflict) vs 0.2 (aligned) split, normalized to 0.6 / 0.4.
-CONFLICT_COMPONENT_WEIGHT = 0.6
-ALIGNED_COMPONENT_WEIGHT = 0.4
+# Internal scaling of the uncertainty component.
+# Competition metric weights: Conflict_acc (0.3), Aligned_cal (0.2).
+# Raw data has 2.5x more Aligned than Conflict. To match SFT v4's
+# 2x conflict oversampling and 2x conflict loss multiplier, we set
+# CONFLICT_COMPONENT_WEIGHT to 1.5 and ALIGNED_COMPONENT_WEIGHT to 0.5.
+CONFLICT_COMPONENT_WEIGHT = 1.5
+ALIGNED_COMPONENT_WEIGHT = 0.5
+
 
 # Which components are active in each curriculum phase.
 _PHASE_COMPONENTS = {
@@ -214,15 +219,21 @@ def compute_sample_reward(completion, gt_label, sample_type, weights=None):
         # --- emotion ----------------------------------------------------
         if parsed["pred_emotion"] == gt_label:
             components["reward_emotion"] = 1.0
+        elif parsed["pred_emotion"] == "neutral":
+            # The competition evaluation target only contains positive and negative.
+            # Predicting neutral risks forcing a 3-class Macro-F1 with F1(neutral)=0.
+            # Penalize neutral predictions to keep the output strictly binary.
+            components["reward_emotion"] = -1.0
 
         # --- uncertainty (ternary, asymmetric) --------------------------
         is_conflict = str(sample_type).strip().lower() == "conflict"
         if is_conflict:
-            value = 1.0 if parsed["is_uncertain"] == "yes" else -0.5
+            # Reward detecting conflict (+1.5), strongly penalize missing it (-1.5)
+            value = 1.0 if parsed["is_uncertain"] == "yes" else -1.0
             value *= CONFLICT_COMPONENT_WEIGHT
         else:
-            # Treat anything that is not "Conflict" as Aligned; the
-            # dataset only contains these two sample types.
+            # Treat anything that is not "Conflict" as Aligned.
+            # Reward correct calibration (+0.5), moderate penalty for false alarm (-0.25)
             value = 1.0 if parsed["is_uncertain"] == "no" else -0.5
             value *= ALIGNED_COMPONENT_WEIGHT
         components["reward_uncertainty"] = value
@@ -235,6 +246,13 @@ def compute_sample_reward(completion, gt_label, sample_type, weights=None):
         elif parsed["is_uncertain"] == "no" and has_question:
             components["reward_question_consistency"] = -1.0
         # else: 0.0 (correct pairing, including "no" + "none")
+    else:
+        # Invalid format: strictly penalize all components so invalid JSON can never
+        # yield a higher score than valid JSON with an incorrect prediction.
+        components["reward_format"] = -2.0
+        components["reward_emotion"] = -1.0
+        components["reward_uncertainty"] = -1.5
+        components["reward_question_consistency"] = -1.0
 
     total = sum(components[name] * weights.get(name, 0.0) for name in components)
     return {

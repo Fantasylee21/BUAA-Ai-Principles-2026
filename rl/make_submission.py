@@ -88,6 +88,9 @@ def parse_args(argv=None):
                              "invalid (default: negative — the majority class; "
                              "neutral is dangerous: gold labels contain almost "
                              "none).")
+    parser.add_argument("--binary-only", action="store_true", default=False,
+                        help="Force binary emotions (positive/negative) by mapping "
+                             "'neutral' to fallback_emotion to protect 2-class Macro-F1.")
     return parser.parse_args(argv)
 
 
@@ -281,6 +284,10 @@ def main(argv=None):
             record("emotion_fallback", sid,
                    f"unparseable/invalid pred_emotion "
                    f"{cleaned['pred_emotion']!r}; using {args.fallback_emotion!r}")
+            emotion = args.fallback_emotion
+        elif args.binary_only and emotion == "neutral":
+            record("neutral_mapped_to_binary", sid,
+                   f"mapped 'neutral' to {args.fallback_emotion!r} to protect 2-class Macro-F1")
             emotion = args.fallback_emotion
         elif emotion != cleaned["pred_emotion"]:
             counters["field_cleaned"] += 1  # case-normalized
